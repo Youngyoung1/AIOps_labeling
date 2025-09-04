@@ -1,3 +1,5 @@
 [user]
 	name = Yongjin
 	email = mark03023223@gmail.com
+[credential]
+	helper = manager

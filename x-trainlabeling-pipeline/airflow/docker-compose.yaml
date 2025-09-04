@@ -1,0 +1,19 @@
+version: '3.9'
+services:
+  airflow:
+    image: apache/airflow:2.9.3-python3.10
+    environment:
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True
+      - AIRFLOW__CORE__ENABLE_XCOM_PICKLING=True
+      - AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL=30
+    env_file:
+      - ../.env.example
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ../configs:/opt/airflow/configs
+      - ../data:/opt/airflow/data
+      - ../src:/opt/airflow/src
+    command: bash -c "airflow db init && airflow users create --username admin --password admin --firstname a --lastname d --role Admin --email admin@example.com && airflow webserver & airflow scheduler"
+    ports:
+      - 8080:8080

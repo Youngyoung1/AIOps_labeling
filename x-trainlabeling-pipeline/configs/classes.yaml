@@ -1,0 +1,4 @@
+# 클래스 이름 및 ID 매핑
+# downstream sync 로 dataset.yolov8-seg.yaml 의 nc / names 업데이트 가능
+classes:
+  0: object

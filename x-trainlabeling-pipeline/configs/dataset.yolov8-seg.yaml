@@ -1,0 +1,9 @@
+# YOLOv8 segmentation dataset config
+# train/val/test 경로는 파이프라인에서 동적으로 심볼릭 링크 또는 카피로 구성
+path: ./data/yolo  # root dir
+train: images/train
+val: images/val
+# test: images/test  # 선택
+
+nc: 1  # update by classes.yaml sync 스크립트
+names: ["object"]

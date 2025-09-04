@@ -1,0 +1,46 @@
+project_name: x_trainlabeling
+seed: 42
+paths:
+  data_root: ./data
+  raw: ./data/raw
+  interim: ./data/interim
+  labels: ./data/labels
+  qc: ./data/qc
+  yolo: ./data/yolo
+  inference: ./data/inference
+  registry: ./data/registry
+
+dataset:
+  # 하나의 폴더에 image(.jpg/.png) 와 동일 stem 의 .txt (YOLO bbox) 가 같이 있는 경우
+  # 여기를 해당 절대/상대 경로로 설정하면 split 단계에서 shared_flat 전략으로 train 세트에 링크
+  # 예) ./external_dataset_flat
+  shared_flat_dir: ./external_dataset_flat
+
+autolabel:
+  model: manual_bbox # sam | yolo | manual_bbox (bbox txt 이미 존재하므로 manual_bbox 로 유지)
+  sam:
+    checkpoint: ./weights/sam_b.pt
+    device: auto
+  yolo:
+    weights: yolov8s-seg.pt
+    conf: 0.50
+  manual_bbox:
+    # 수동 바운딩박스 라벨링(JSON) 위치 (active_learning 단계에서 처리)
+    json_path: ./data/manual_bboxes.json
+
+train:
+  task: detect  # segment | detect (폴리곤 대신 YOLO bbox 사용)
+  image_size: 640
+  epochs: 50
+  batch: 8
+  optimizer: auto
+  lr0: 0.01
+  patience: 20
+
+active_learning:
+  min_confidence: 0.50
+  max_samples: 200
+  strategy: low_confidence
+
+augmentation:
+  enabled: false  # true 로 변경 시 augment 단계 수행

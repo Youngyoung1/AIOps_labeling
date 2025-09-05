@@ -3177,16 +3177,29 @@ class LabelingWidget(LabelDialog):
         self.update_gid_box()
         # 중앙화된 삭제 후 자동 저장 (shape 삭제 경로 모두 커버)
         if shapes:
-            # dirty 상태 표기 (있다면)
-            try:
-                self.dirty = True
-            except Exception:
-                pass
-            if self._config.get("auto_save", True):
+            auto_save = self._config.get("auto_save", False)
+            nav_save = self._config.get("auto_save_on_navigate", False)
+            # 1) 즉시 자동 저장 모드: 바로 저장 (프롬프트/dirty 미표시)
+            if auto_save:
                 try:
                     self._auto_save_generic()
                 except Exception as e:  # pragma: no cover
                     print(f"[AUTO_SAVE][DELETE] 예외: {e}")
+                return
+            # 2) 지연 저장 모드: dirty 대신 pending 플래그만 세팅 (프롬프트 회피)
+            if nav_save:
+                self._pending_auto_save = True
+                return
+            # 3) 수동 모드: 기존 dirty 처리 (프롬프트 유지)
+            try:
+                self.dirty = True
+                self.actions.save.setEnabled(True)
+                title = __appname__
+                if self.filename is not None:
+                    title = f"{title} - {self.filename}*"
+                self.setWindowTitle(title)
+            except Exception:
+                pass
 
     def _auto_save_generic(self):
         """도형 생성/수정/삭제/편집 시 공통 자동 저장.
@@ -3993,6 +4006,15 @@ class LabelingWidget(LabelDialog):
         if event.key() == Qt.Key_Escape:
             event.accept()
             return
+        # 좌우 화살표로 이미지 이동 (A/D 단축키 보완)
+        if event.key() == Qt.Key_Left:
+            event.accept()
+            self.open_prev_image()
+            return
+        if event.key() == Qt.Key_Right:
+            event.accept()
+            self.open_next_image()
+            return
         super(LabelingWidget, self).keyPressEvent(event)
 
     def resizeEvent(self, _):
@@ -4239,7 +4261,20 @@ class LabelingWidget(LabelDialog):
             self._save_file(self.output_file)
             self.close()
         else:
-            self._save_file(self.save_file_dialog())
+            # 자동/지연 저장 모드 혹은 suppress_save_dialog 구성 시 다이얼로그 생략
+            suppress = self._config.get("auto_save") or \
+                self._config.get("auto_save_on_navigate") or \
+                self._config.get("suppress_save_dialog", True)
+            if suppress and self.filename:
+                base_no_ext, _ = osp.splitext(self.filename)
+                # output_dir 지정 시 그 위치로
+                if self.output_dir:
+                    target = osp.join(self.output_dir, osp.basename(base_no_ext) + LabelFile.suffix)
+                else:
+                    target = base_no_ext + LabelFile.suffix
+                self._save_file(target)
+            else:
+                self._save_file(self.save_file_dialog())
 
     def save_file_as(self, _value=False):
         assert not self.image.isNull(), "cannot save empty image"
@@ -4405,6 +4440,17 @@ class LabelingWidget(LabelDialog):
         return osp.exists(label_file)
 
     def may_continue(self):
+        # 자동 저장(즉시/지연) 모드에서는 사용자 프롬프트 없이 진행
+        if self._config.get("auto_save", False):
+            return True
+        if self._config.get("auto_save_on_navigate", False):
+            # 지연 저장 모드에서 pending 이 남아 있으면 여기서 한번 flush 해줌 (닫기/폴더 변경 등)
+            if getattr(self, "_pending_auto_save", False):
+                try:
+                    self._flush_pending_auto_save()
+                except Exception:
+                    pass
+            return True
         if not self.dirty:
             return True
         mb = QtWidgets.QMessageBox
@@ -4454,9 +4500,9 @@ class LabelingWidget(LabelDialog):
                     action.setEnabled(False)
 
     def delete_selected_shape(self):
+        # remove_labels 가 모드에 따라 자동/지연/수동 처리 모두 수행
         self.remove_labels(self.canvas.delete_selected())
-        self.set_dirty()
-    # 저장은 set_dirty / remove_labels 내 자동 저장 로직 및 지연 저장 플래그에 따름
+        # 수동 모드에서만 별도 dirty 필요 (remove_labels 내부 처리)
         if self.no_shape():
             for action in self.actions.on_shapes_present:
                 action.setEnabled(False)
@@ -4704,24 +4750,22 @@ class LabelingWidget(LabelDialog):
         if not self.image_path:
             return
         import pathlib, importlib
+        # utils 경로 동적 import (최소화) - 이미 로드 되어있으면 캐시 활용
         root = pathlib.Path(__file__).resolve().parents[2]
-        classes_util = root / 'utils' / 'classes.py'
-        yolo_util = root / 'utils' / 'yolo.py'
-        if not classes_util.exists() or not yolo_util.exists():  # pragma: no cover
+        def _dyn_import(rel_path: str, attr_names: list[str]):
+            mod_path = root / 'utils' / rel_path
+            if not mod_path.exists():  # pragma: no cover
+                return [None] * len(attr_names)
+            spec = importlib.util.spec_from_file_location(f"_dyn_{rel_path}", str(mod_path))
+            if not spec or not spec.loader:  # pragma: no cover
+                return [None] * len(attr_names)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)  # type: ignore
+            return [getattr(module, n, None) for n in attr_names]
+        read_classes_txt, write_classes_txt = _dyn_import('classes.py', ['read_classes_txt','write_classes_txt'])
+        save_yolo_annotations, = _dyn_import('yolo.py', ['save_yolo_annotations'])
+        if not (read_classes_txt and write_classes_txt and save_yolo_annotations):  # pragma: no cover
             return
-        # dynamic import (utils.py 네이밍 충돌 회피)
-        def _load(spec_path, name):
-            spec = importlib.util.spec_from_file_location(name, str(spec_path))
-            if not spec or not spec.loader:
-                raise ImportError(f"spec 생성 실패: {spec_path}")
-            m = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(m)  # type: ignore
-            return m
-        m_classes = _load(classes_util, 'classes_sync_mod')
-        m_yolo = _load(yolo_util, 'yolo_sync_mod')
-        read_classes_txt = m_classes.read_classes_txt  # type: ignore
-        write_classes_txt = m_classes.write_classes_txt  # type: ignore
-        save_yolo_annotations = m_yolo.save_yolo_annotations  # type: ignore
 
         img_p = pathlib.Path(self.image_path)
         classes_path = img_p.parent / 'classes.txt'
@@ -4769,18 +4813,37 @@ class LabelingWidget(LabelDialog):
             except Exception as e:  # pragma: no cover
                 logger.warning(f"classes.txt 갱신 실패: {e}")
 
-        # YOLO txt 저장
+        # YOLO txt 저장 최적화
         ann_txt = img_p.with_suffix('.txt')
-        try:
-            save_yolo_annotations(
-                ann_txt,
-                boxes,
-                width=self.image.width(),
-                height=self.image.height(),
-                classes=classes,
-            )
-        except Exception as e:  # pragma: no cover
-            logger.warning(f"YOLO txt 저장 실패: {e}")
+
+        def _remove_if_exists(path: pathlib.Path, reason: str):
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception as _e:  # pragma: no cover
+                logger.warning(f"YOLO txt 삭제 실패({reason}): {_e}")
+
+        if not boxes:
+            # 박스 없음 -> 파일 존재 시 삭제
+            _remove_if_exists(ann_txt, 'no_boxes')
+        else:
+            try:
+                save_yolo_annotations(
+                    ann_txt,
+                    boxes,
+                    width=self.image.width(),
+                    height=self.image.height(),
+                    classes=classes,
+                )
+            except Exception as e:  # pragma: no cover
+                logger.warning(f"YOLO txt 저장 실패: {e}")
+            else:
+                # 저장 후 0바이트라면 의미 없는 내용 -> 삭제
+                try:
+                    if ann_txt.exists() and ann_txt.stat().st_size == 0:
+                        _remove_if_exists(ann_txt, 'empty_after_save')
+                except Exception as e:  # pragma: no cover
+                    logger.warning(f"YOLO txt 크기 확인 실패: {e}")
 
     @pyqtSlot()
     def new_shapes_from_auto_labeling(self, auto_labeling_result):

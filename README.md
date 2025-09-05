@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <div align="center">
   <p>
     <a href="https://github.com/CVHub520/X-AnyLabeling/" target="_blank">
@@ -199,3 +200,6 @@ If you use this software in your research, please cite it as below:
 ![Star History Chart](https://api.star-history.com/svg?repos=CVHub520/X-AnyLabeling&type=Date)
 
 <div align="center"><a href="#top">🔝 Back to Top</a></div>
+=======
+# AIOps_labeling
+>>>>>>> 0c7e371fd56123f482374395e3a1b82de650c0c8

@@ -1,0 +1,1583 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YOLO 자동 라벨링 리뷰 시스템 - 바운딩 박스 편집</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1.5rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .stats {
+            display: flex;
+            gap: 2rem;
+            margin-top: 1rem;
+        }
+        
+        .stat-item {
+            background: rgba(255,255,255,0.2);
+            padding: 0.8rem 1.2rem;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+        
+        .controls {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 15px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            margin-bottom: 2rem;
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .filter-group label {
+            font-weight: 500;
+            color: #555;
+        }
+        
+        select, input, button {
+            padding: 0.6rem 1rem;
+            border: 2px solid #e1e5e9;
+            border-radius: 8px;
+            font-size: 0.95rem;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: transform 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .image-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 2rem;
+        }
+        
+        .image-card {
+            background: white;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .image-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+        }
+        
+        .image-container {
+            position: relative;
+            background: #f8f9fa;
+            overflow: hidden;
+        }
+        
+        .image-container img {
+            width: 100%;
+            height: 300px;
+            object-fit: contain;
+            transition: transform 0.3s;
+            user-select: none;
+        }
+        
+        .bbox {
+            position: absolute;
+            border: 2px solid;
+            pointer-events: none;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            cursor: move;
+        }
+        
+        .bbox.high-confidence {
+            border-color: #28a745;
+        }
+        
+        .bbox.medium-confidence {
+            border-color: #ffc107;
+        }
+        
+        .bbox.low-confidence {
+            border-color: #dc3545;
+        }
+        
+        .bbox.selected {
+            border-width: 3px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.3);
+        }
+        
+        .bbox.editing {
+            pointer-events: auto;
+        }
+        
+        .bbox-label {
+            position: absolute;
+            top: -25px;
+            left: 0;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+        
+        .resize-handle {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background: #fff;
+            border: 2px solid #007bff;
+            border-radius: 50%;
+            cursor: nw-resize;
+        }
+        
+        .resize-handle.nw { top: -4px; left: -4px; cursor: nw-resize; }
+        .resize-handle.ne { top: -4px; right: -4px; cursor: ne-resize; }
+        .resize-handle.sw { bottom: -4px; left: -4px; cursor: sw-resize; }
+        .resize-handle.se { bottom: -4px; right: -4px; cursor: se-resize; }
+        
+        .card-content {
+            padding: 1.5rem;
+        }
+        
+        .image-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .image-name {
+            font-weight: 600;
+            color: #333;
+            font-size: 1.1rem;
+        }
+        
+        .confidence-badge {
+            padding: 0.3rem 0.8rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: white;
+        }
+        
+        .confidence-badge.high {
+            background: #28a745;
+        }
+        
+        .confidence-badge.medium {
+            background: #ffc107;
+            color: #333;
+        }
+        
+        .confidence-badge.low {
+            background: #dc3545;
+        }
+        
+        .predictions-list {
+            max-height: 200px;
+            overflow-y: auto;
+            margin-bottom: 1rem;
+        }
+        
+        .prediction-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem;
+            border: 1px solid #eee;
+            border-radius: 5px;
+            margin-bottom: 0.5rem;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .prediction-item:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .prediction-item.selected {
+            background-color: #e3f2fd;
+            border-color: #2196f3;
+        }
+        
+        .prediction-info {
+            flex: 1;
+        }
+        
+        .class-name {
+            font-weight: 500;
+            color: #333;
+        }
+        
+        .confidence-score {
+            font-size: 0.9rem;
+            color: #666;
+        }
+        
+        .prediction-actions {
+            display: flex;
+            gap: 0.3rem;
+        }
+        
+        .btn-small {
+            padding: 0.3rem 0.6rem;
+            font-size: 0.8rem;
+            border-radius: 4px;
+        }
+        
+        .btn-edit-bbox {
+            background: #17a2b8;
+        }
+        
+        .btn-delete-bbox {
+            background: #dc3545;
+        }
+        
+        .action-buttons {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+        
+        .btn-approve {
+            background: linear-gradient(135deg, #28a745, #20c997);
+            flex: 1;
+        }
+        
+        .btn-reject {
+            background: linear-gradient(135deg, #dc3545, #fd7e14);
+            flex: 1;
+        }
+        
+        .btn-edit {
+            background: linear-gradient(135deg, #ffc107, #fd7e14);
+            color: #333;
+            flex: 1;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(5px);
+        }
+        
+        .modal-content {
+            background: white;
+            margin: 2% auto;
+            padding: 2rem;
+            border-radius: 15px;
+            width: 95%;
+            max-width: 1200px;
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+        }
+        
+        .close {
+            position: absolute;
+            right: 1rem;
+            top: 1rem;
+            font-size: 2rem;
+            font-weight: bold;
+            cursor: pointer;
+            color: #999;
+            transition: color 0.2s;
+        }
+        
+        .close:hover {
+            color: #333;
+        }
+        
+        .edit-container {
+            display: flex;
+            gap: 2rem;
+            margin-top: 1rem;
+        }
+        
+        .edit-image-container {
+            flex: 2;
+            position: relative;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #f8f9fa;
+        }
+        
+        .edit-image {
+            width: 100%;
+            height: auto;
+            max-height: 500px;
+            object-fit: contain;
+            user-select: none;
+        }
+        
+        .edit-controls {
+            flex: 1;
+            background: #f8f9fa;
+            padding: 1.5rem;
+            border-radius: 8px;
+        }
+        
+        .tool-section {
+            margin-bottom: 2rem;
+            padding: 1rem;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .tool-section h4 {
+            margin-bottom: 1rem;
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 0.5rem;
+        }
+        
+        .tool-buttons {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        
+        .tool-btn {
+            padding: 0.5rem 1rem;
+            border: 2px solid #ddd;
+            background: white;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.9rem;
+        }
+        
+        .tool-btn:hover {
+            background: #f0f0f0;
+        }
+        
+        .tool-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        
+        .class-selector {
+            width: 100%;
+            margin-bottom: 1rem;
+            padding: 0.7rem;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 1rem;
+        }
+        
+        .prediction-editor {
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            background: white;
+        }
+        
+        .prediction-editor.selected {
+            border-color: #667eea;
+            box-shadow: 0 0 5px rgba(102, 126, 234, 0.3);
+        }
+        
+        .coord-inputs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+        
+        .coord-input {
+            padding: 0.4rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        
+        .progress-bar {
+            background: #e9ecef;
+            border-radius: 10px;
+            height: 8px;
+            margin: 1rem 0;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            background: linear-gradient(135deg, #28a745, #20c997);
+            height: 100%;
+            border-radius: 10px;
+            transition: width 0.5s ease;
+        }
+        
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 3rem;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .drawing-bbox {
+            position: absolute;
+            border: 2px dashed #007bff;
+            background: rgba(0, 123, 255, 0.1);
+            pointer-events: none;
+        }
+        
+        .crosshair {
+            cursor: crosshair !important;
+        }
+        
+        @media (max-width: 768px) {
+            .image-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .stats {
+                flex-direction: column;
+                gap: 1rem;
+            }
+            
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .edit-container {
+                flex-direction: column;
+            }
+            
+            .tool-buttons {
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎯 YOLO 자동 라벨링 리뷰 시스템 (바운딩 박스 편집)</h1>
+        <p>AI가 생성한 라벨을 검토하고 바운딩 박스를 직접 편집하세요</p>
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-value" id="totalImages">0</div>
+                <div>총 이미지</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="approvedImages">0</div>
+                <div>승인됨</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="rejectedImages">0</div>
+                <div>거부됨</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value" id="progressPercent">0%</div>
+                <div>진행률</div>
+            </div>
+        </div>
+        <div class="progress-bar">
+            <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="controls">
+            <div class="filter-group">
+                <label for="confidenceFilter">신뢰도 필터:</label>
+                <select id="confidenceFilter">
+                    <option value="all">전체</option>
+                    <option value="high">높음 (≥0.8)</option>
+                    <option value="medium">보통 (0.5-0.8)</option>
+                    <option value="low">낮음 (<0.5)</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label for="classFilter">클래스 필터:</label>
+                <select id="classFilter">
+                    <option value="all">전체 클래스</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label for="statusFilter">상태 필터:</label>
+                <select id="statusFilter">
+                    <option value="all">전체</option>
+                    <option value="pending">대기중</option>
+                    <option value="approved">승인됨</option>
+                    <option value="rejected">거부됨</option>
+                </select>
+            </div>
+            
+            <button onclick="loadImages()">🔄 새로고침</button>
+            <button onclick="exportResults()">📤 결과 내보내기</button>
+            <button onclick="showBatchActions()">📦 일괄 처리</button>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>이미지를 불러오는 중...</p>
+        </div>
+
+        <div class="image-grid" id="imageGrid">
+            <!-- 이미지 카드들이 여기에 동적으로 추가됩니다 -->
+        </div>
+    </div>
+
+    <!-- 바운딩 박스 편집 모달 -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeEditModal()">&times;</span>
+            <h2>바운딩 박스 편집 - <span id="editImageName"></span></h2>
+            
+            <div class="edit-container">
+                <div class="edit-image-container">
+                    <img id="editImage" class="edit-image" onload="initializeEditor()">
+                    <!-- 바운딩 박스들이 여기에 동적으로 추가됩니다 -->
+                </div>
+                
+                <div class="edit-controls">
+                    <div class="tool-section">
+                        <h4>🛠️ 편집 도구</h4>
+                        <div class="tool-buttons">
+                            <button class="tool-btn active" id="selectTool" onclick="setTool('select')">
+                                📍 선택
+                            </button>
+                            <button class="tool-btn" id="drawTool" onclick="setTool('draw')">
+                                ✏️ 그리기
+                            </button>
+                            <button class="tool-btn" id="deleteTool" onclick="setTool('delete')">
+                                🗑️ 삭제
+                            </button>
+                        </div>
+                        
+                        <label for="newBboxClass">새 바운딩 박스 클래스:</label>
+                        <select id="newBboxClass" class="class-selector">
+                            <!-- 클래스 옵션들이 동적으로 추가됩니다 -->
+                        </select>
+                    </div>
+                    
+                    <div class="tool-section">
+                        <h4>📋 예측 결과</h4>
+                        <div id="predictionsList">
+                            <!-- 예측 결과들이 여기에 동적으로 추가됩니다 -->
+                        </div>
+                        
+                        <button onclick="addNewBbox()" style="width: 100%; margin-top: 1rem; background: #28a745;">
+                            ➕ 새 바운딩 박스 추가
+                        </button>
+                    </div>
+                    
+                    <div class="tool-section">
+                        <h4>💾 저장</h4>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <button onclick="saveEdits()" style="flex: 1; background: #28a745;">
+                                ✅ 저장
+                            </button>
+                            <button onclick="resetEdits()" style="flex: 1; background: #6c757d;">
+                                🔄 초기화
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 일괄 처리 모달 -->
+    <div id="batchModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>일괄 처리</h2>
+            <div class="filter-group">
+                <label>신뢰도 기준:</label>
+                <input type="range" id="batchConfidence" min="0" max="1" step="0.1" value="0.8">
+                <span id="batchConfidenceValue">0.8</span>
+            </div>
+            <br>
+            <button onclick="batchApprove()">선택된 항목 일괄 승인</button>
+            <button onclick="batchReject()">선택된 항목 일괄 거부</button>
+        </div>
+    </div>
+
+    <script>
+        // 전역 변수
+        let reviewData = [];
+        let filteredData = [];
+        let classNames = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck'];
+        let stats = {
+            total: 0,
+            approved: 0,
+            rejected: 0,
+            pending: 0
+        };
+        
+        // 편집 관련 변수
+        let currentEditingImage = null;
+        let currentTool = 'select';
+        let isDrawing = false;
+        let startX = 0;
+        let startY = 0;
+        let currentDrawingBox = null;
+        let selectedBboxIndex = -1;
+        let isDragging = false;
+        let isResizing = false;
+        let resizeHandle = null;
+        let originalPredictions = [];
+        
+        // 초기화
+        document.addEventListener('DOMContentLoaded', function() {
+            loadImages();
+            setupEventListeners();
+        });
+
+        function setupEventListeners() {
+            // 모달 닫기
+            document.querySelectorAll('.close').forEach(closeBtn => {
+                closeBtn.onclick = function() {
+                    if (closeBtn.closest('#editModal')) {
+                        closeEditModal();
+                    } else {
+                        closeBtn.closest('.modal').style.display = 'none';
+                    }
+                }
+            });
+
+            // 모달 외부 클릭 시 닫기
+            window.onclick = function(event) {
+                if (event.target.classList.contains('modal')) {
+                    if (event.target.id === 'editModal') {
+                        closeEditModal();
+                    } else {
+                        event.target.style.display = 'none';
+                    }
+                }
+            }
+
+            // 필터 변경 이벤트
+            ['confidenceFilter', 'classFilter', 'statusFilter'].forEach(id => {
+                document.getElementById(id).addEventListener('change', filterImages);
+            });
+
+            // 일괄 처리 신뢰도 슬라이더
+            const batchConfidence = document.getElementById('batchConfidence');
+            const batchConfidenceValue = document.getElementById('batchConfidenceValue');
+            batchConfidence.addEventListener('input', function() {
+                batchConfidenceValue.textContent = this.value;
+            });
+
+            // 키보드 단축키
+            document.addEventListener('keydown', function(e) {
+                if (currentEditingImage) {
+                    if (e.key === 'Escape') {
+                        closeEditModal();
+                    } else if (e.key === 'Delete' && selectedBboxIndex >= 0) {
+                        deleteBbox(selectedBboxIndex);
+                    } else if (e.key === '1') {
+                        setTool('select');
+                    } else if (e.key === '2') {
+                        setTool('draw');
+                    } else if (e.key === '3') {
+                        setTool('delete');
+                    }
+                }
+            });
+        }
+
+        // 이미지 데이터 로드
+        async function loadImages() {
+            showLoading(true);
+            
+            try {
+                const response = await fetch('/api/review-queue');
+                if (response.ok) {
+                    reviewData = await response.json();
+                } else {
+                    reviewData = generateDemoData();
+                }
+                
+                updateClassFilter();
+                filterImages();
+                updateStats();
+                
+            } catch (error) {
+                console.error('이미지 로드 실패:', error);
+                reviewData = generateDemoData();
+                updateClassFilter();
+                filterImages();
+                updateStats();
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function generateDemoData() {
+            const demoData = [];
+            for (let i = 1; i <= 20; i++) {
+                const confidence = Math.random() * 0.5 + 0.3;
+                const predictions = [];
+                
+                const numPredictions = Math.floor(Math.random() * 5) + 1;
+                for (let j = 0; j < numPredictions; j++) {
+                    predictions.push({
+                        class_id: Math.floor(Math.random() * classNames.length),
+                        class_name: classNames[Math.floor(Math.random() * classNames.length)],
+                        confidence: Math.random() * 0.5 + 0.3,
+                        bbox: [
+                            Math.random() * 0.3,
+                            Math.random() * 0.3,
+                            Math.random() * 0.4 + 0.2,
+                            Math.random() * 0.4 + 0.2
+                        ]
+                    });
+                }
+                
+                demoData.push({
+                    id: `image_${i}`,
+                    image_path: `https://picsum.photos/400/300?random=${i}`,
+                    predictions: predictions,
+                    status: 'pending',
+                    confidence_avg: confidence,
+                    image_info: { width: 400, height: 300 }
+                });
+            }
+            return demoData;
+        }
+
+        function updateClassFilter() {
+            const classFilter = document.getElementById('classFilter');
+            const newBboxClass = document.getElementById('newBboxClass');
+            const uniqueClasses = [...new Set(
+                reviewData.flatMap(item => 
+                    item.predictions.map(pred => pred.class_name || classNames[pred.class_id])
+                )
+            )];
+            
+            // 클래스 필터 업데이트
+            while (classFilter.children.length > 1) {
+                classFilter.removeChild(classFilter.lastChild);
+            }
+            uniqueClasses.forEach(className => {
+                const option = document.createElement('option');
+                option.value = className;
+                option.textContent = className;
+                classFilter.appendChild(option);
+            });
+            
+            // 새 바운딩 박스 클래스 선택기 업데이트
+            if (newBboxClass) {
+                newBboxClass.innerHTML = '';
+                classNames.forEach((className, index) => {
+                    const option = document.createElement('option');
+                    option.value = index;
+                    option.textContent = className;
+                    newBboxClass.appendChild(option);
+                });
+            }
+        }
+
+        function filterImages() {
+            const confidenceFilter = document.getElementById('confidenceFilter').value;
+            const classFilter = document.getElementById('classFilter').value;
+            const statusFilter = document.getElementById('statusFilter').value;
+
+            filteredData = reviewData.filter(item => {
+                if (confidenceFilter !== 'all') {
+                    const avgConf = item.confidence_avg;
+                    if (confidenceFilter === 'high' && avgConf < 0.8) return false;
+                    if (confidenceFilter === 'medium' && (avgConf < 0.5 || avgConf >= 0.8)) return false;
+                    if (confidenceFilter === 'low' && avgConf >= 0.5) return false;
+                }
+
+                if (classFilter !== 'all') {
+                    const hasClass = item.predictions.some(pred => 
+                        (pred.class_name || classNames[pred.class_id]) === classFilter
+                    );
+                    if (!hasClass) return false;
+                }
+
+                if (statusFilter !== 'all' && item.status !== statusFilter) return false;
+
+                return true;
+            });
+
+            renderImages();
+        }
+
+        function renderImages() {
+            const imageGrid = document.getElementById('imageGrid');
+            imageGrid.innerHTML = '';
+
+            filteredData.forEach((item, index) => {
+                const card = createImageCard(item, index);
+                imageGrid.appendChild(card);
+            });
+        }
+
+        function createImageCard(item, index) {
+            const card = document.createElement('div');
+            card.className = 'image-card';
+            card.dataset.id = item.id;
+
+            const avgConfidence = item.confidence_avg;
+            let confidenceClass = 'low';
+            if (avgConfidence >= 0.8) confidenceClass = 'high';
+            else if (avgConfidence >= 0.5) confidenceClass = 'medium';
+
+            card.innerHTML = `
+                <div class="image-container" style="position: relative;">
+                    <img src="${item.image_path}" alt="${item.id}" onload="drawBoundingBoxes(this, ${JSON.stringify(item.predictions).replace(/"/g, '&quot;')})">
+                </div>
+                <div class="card-content">
+                    <div class="image-info">
+                        <div class="image-name">${item.id}</div>
+                        <div class="confidence-badge ${confidenceClass}">
+                            ${(avgConfidence * 100).toFixed(1)}%
+                        </div>
+                    </div>
+                    
+                    <div class="predictions-list">
+                        ${item.predictions.map((pred, idx) => `
+                            <div class="prediction-item" onclick="selectPrediction('${item.id}', ${idx})">
+                                <div class="prediction-info">
+                                    <div class="class-name">${pred.class_name || classNames[pred.class_id]}</div>
+                                    <div class="confidence-score">${(pred.confidence * 100).toFixed(1)}% 신뢰도</div>
+                                </div>
+                                <div class="prediction-actions">
+                                    <button class="btn-small btn-edit-bbox" onclick="event.stopPropagation(); editBbox('${item.id}', ${idx})">편집</button>
+                                    <button class="btn-small btn-delete-bbox" onclick="event.stopPropagation(); deletePrediction('${item.id}', ${idx})">삭제</button>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    
+                    <div class="action-buttons">
+                        <button class="btn-approve" onclick="approveImage('${item.id}')">✓ 승인</button>
+                        <button class="btn-edit" onclick="openEditor('${item.id}')">✏️ 편집</button>
+                        <button class="btn-reject" onclick="rejectImage('${item.id}')">✗ 거부</button>
+                    </div>
+                </div>
+            `;
+
+            return card;
+        }
+
+        function drawBoundingBoxes(img, predictions) {
+            const container = img.parentElement;
+            
+            // 기존 바운딩 박스 제거
+            container.querySelectorAll('.bbox').forEach(bbox => bbox.remove());
+            
+            predictions.forEach((pred, index) => {
+                const bbox = document.createElement('div');
+                bbox.className = 'bbox';
+                bbox.dataset.predIndex = index;
+                
+                // 신뢰도에 따른 스타일 적용
+                if (pred.confidence >= 0.8) bbox.classList.add('high-confidence');
+                else if (pred.confidence >= 0.5) bbox.classList.add('medium-confidence');
+                else bbox.classList.add('low-confidence');
+                
+                // 바운딩 박스 위치 계산
+                const imgRect = img.getBoundingClientRect();
+                const containerRect = container.getBoundingClientRect();
+                
+                const left = pred.bbox[0] * img.offsetWidth;
+                const top = pred.bbox[1] * img.offsetHeight;
+                const width = pred.bbox[2] * img.offsetWidth;
+                const height = pred.bbox[3] * img.offsetHeight;
+                
+                bbox.style.left = `${left}px`;
+                bbox.style.top = `${top}px`;
+                bbox.style.width = `${width}px`;
+                bbox.style.height = `${height}px`;
+                
+                // 라벨 추가
+                const label = document.createElement('div');
+                label.className = 'bbox-label';
+                label.textContent = `${pred.class_name || classNames[pred.class_id]} ${(pred.confidence * 100).toFixed(0)}%`;
+                bbox.appendChild(label);
+                
+                container.appendChild(bbox);
+            });
+        }
+
+        // 바운딩 박스 편집 모달 열기
+        function openEditor(imageId) {
+            const item = reviewData.find(item => item.id === imageId);
+            if (!item) return;
+
+            currentEditingImage = item;
+            originalPredictions = JSON.parse(JSON.stringify(item.predictions)); // 깊은 복사
+
+            document.getElementById('editImageName').textContent = item.id;
+            document.getElementById('editImage').src = item.image_path;
+            document.getElementById('editModal').style.display = 'block';
+        }
+
+        function closeEditModal() {
+            if (currentEditingImage && originalPredictions) {
+                // 변경사항이 있는지 확인
+                const hasChanges = JSON.stringify(currentEditingImage.predictions) !== JSON.stringify(originalPredictions);
+                
+                if (hasChanges) {
+                    if (!confirm('변경사항이 있습니다. 저장하지 않고 닫으시겠습니까?')) {
+                        return;
+                    }
+                    // 변경사항 취소
+                    currentEditingImage.predictions = originalPredictions;
+                }
+            }
+            
+            document.getElementById('editModal').style.display = 'none';
+            currentEditingImage = null;
+            originalPredictions = [];
+            selectedBboxIndex = -1;
+            setTool('select');
+        }
+
+        function initializeEditor() {
+            if (!currentEditingImage) return;
+            
+            updateClassFilter();
+            renderEditingBboxes();
+            updatePredictionsList();
+            setTool('select');
+        }
+
+        function renderEditingBboxes() {
+            const container = document.querySelector('.edit-image-container');
+            const img = document.getElementById('editImage');
+            
+            // 기존 바운딩 박스 제거
+            container.querySelectorAll('.bbox, .drawing-bbox').forEach(bbox => bbox.remove());
+            
+            currentEditingImage.predictions.forEach((pred, index) => {
+                const bbox = createEditableBbox(pred, index, img);
+                container.appendChild(bbox);
+            });
+        }
+
+        function createEditableBbox(pred, index, img) {
+            const bbox = document.createElement('div');
+            bbox.className = 'bbox editing';
+            bbox.dataset.predIndex = index;
+            
+            // 신뢰도에 따른 스타일
+            if (pred.confidence >= 0.8) bbox.classList.add('high-confidence');
+            else if (pred.confidence >= 0.5) bbox.classList.add('medium-confidence');
+            else bbox.classList.add('low-confidence');
+            
+            // 위치 설정
+            updateBboxPosition(bbox, pred, img);
+            
+            // 라벨 추가
+            const label = document.createElement('div');
+            label.className = 'bbox-label';
+            label.textContent = `${pred.class_name || classNames[pred.class_id]} ${(pred.confidence * 100).toFixed(0)}%`;
+            bbox.appendChild(label);
+            
+            // 리사이즈 핸들 추가
+            ['nw', 'ne', 'sw', 'se'].forEach(pos => {
+                const handle = document.createElement('div');
+                handle.className = `resize-handle ${pos}`;
+                handle.dataset.position = pos;
+                bbox.appendChild(handle);
+            });
+            
+            // 이벤트 리스너 추가
+            bbox.addEventListener('mousedown', handleBboxMouseDown);
+            
+            return bbox;
+        }
+
+        function updateBboxPosition(bbox, pred, img) {
+            const left = pred.bbox[0] * img.offsetWidth;
+            const top = pred.bbox[1] * img.offsetHeight;
+            const width = pred.bbox[2] * img.offsetWidth;
+            const height = pred.bbox[3] * img.offsetHeight;
+            
+            bbox.style.left = `${left}px`;
+            bbox.style.top = `${top}px`;
+            bbox.style.width = `${width}px`;
+            bbox.style.height = `${height}px`;
+        }
+
+        function updatePredictionsList() {
+            const predictionsList = document.getElementById('predictionsList');
+            predictionsList.innerHTML = '';
+            
+            currentEditingImage.predictions.forEach((pred, index) => {
+                const predDiv = document.createElement('div');
+                predDiv.className = 'prediction-editor';
+                predDiv.dataset.predIndex = index;
+                
+                if (index === selectedBboxIndex) {
+                    predDiv.classList.add('selected');
+                }
+                
+                predDiv.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                        <strong>${pred.class_name || classNames[pred.class_id]}</strong>
+                        <button class="btn-small btn-delete-bbox" onclick="deleteBbox(${index})">삭제</button>
+                    </div>
+                    
+                    <div style="margin-bottom: 0.5rem;">
+                        <label>클래스:</label>
+                        <select onchange="updatePredictionClass(${index}, this.value)" style="width: 100%; padding: 0.3rem;">
+                            ${classNames.map((name, idx) => 
+                                `<option value="${idx}" ${idx === pred.class_id ? 'selected' : ''}>${name}</option>`
+                            ).join('')}
+                        </select>
+                    </div>
+                    
+                    <div style="margin-bottom: 0.5rem;">
+                        <label>신뢰도: <span>${(pred.confidence * 100).toFixed(1)}%</span></label>
+                        <input type="range" min="0" max="1" step="0.01" value="${pred.confidence}" 
+                               onchange="updatePredictionConfidence(${index}, this.value)"
+                               style="width: 100%;">
+                    </div>
+                    
+                    <div class="coord-inputs">
+                        <input type="number" class="coord-input" placeholder="X" 
+                               value="${(pred.bbox[0] * 100).toFixed(1)}" 
+                               onchange="updateBboxCoord(${index}, 0, this.value / 100)">
+                        <input type="number" class="coord-input" placeholder="Y" 
+                               value="${(pred.bbox[1] * 100).toFixed(1)}" 
+                               onchange="updateBboxCoord(${index}, 1, this.value / 100)">
+                        <input type="number" class="coord-input" placeholder="Width" 
+                               value="${(pred.bbox[2] * 100).toFixed(1)}" 
+                               onchange="updateBboxCoord(${index}, 2, this.value / 100)">
+                        <input type="number" class="coord-input" placeholder="Height" 
+                               value="${(pred.bbox[3] * 100).toFixed(1)}" 
+                               onchange="updateBboxCoord(${index}, 3, this.value / 100)">
+                    </div>
+                `;
+                
+                predDiv.addEventListener('click', () => selectBbox(index));
+                predictionsList.appendChild(predDiv);
+            });
+        }
+
+        function setTool(tool) {
+            currentTool = tool;
+            
+            // 도구 버튼 업데이트
+            document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(`${tool}Tool`).classList.add('active');
+            
+            const container = document.querySelector('.edit-image-container');
+            const img = document.getElementById('editImage');
+            
+            // 커서 변경
+            container.classList.remove('crosshair');
+            if (tool === 'draw') {
+                container.classList.add('crosshair');
+            }
+            
+            // 이벤트 리스너 설정
+            img.onmousedown = null;
+            if (tool === 'draw') {
+                img.onmousedown = startDrawing;
+            }
+        }
+
+        function startDrawing(e) {
+            if (currentTool !== 'draw') return;
+            
+            isDrawing = true;
+            const rect = e.target.getBoundingClientRect();
+            startX = e.clientX - rect.left;
+            startY = e.clientY - rect.top;
+            
+            // 그리기 박스 생성
+            currentDrawingBox = document.createElement('div');
+            currentDrawingBox.className = 'drawing-bbox';
+            currentDrawingBox.style.left = `${startX}px`;
+            currentDrawingBox.style.top = `${startY}px`;
+            currentDrawingBox.style.width = '0px';
+            currentDrawingBox.style.height = '0px';
+            
+            document.querySelector('.edit-image-container').appendChild(currentDrawingBox);
+            
+            // 마우스 이벤트 추가
+            document.addEventListener('mousemove', continueDrawing);
+            document.addEventListener('mouseup', finishDrawing);
+        }
+
+        function continueDrawing(e) {
+            if (!isDrawing || !currentDrawingBox) return;
+            
+            const rect = document.getElementById('editImage').getBoundingClientRect();
+            const currentX = e.clientX - rect.left;
+            const currentY = e.clientY - rect.top;
+            
+            const left = Math.min(startX, currentX);
+            const top = Math.min(startY, currentY);
+            const width = Math.abs(currentX - startX);
+            const height = Math.abs(currentY - startY);
+            
+            currentDrawingBox.style.left = `${left}px`;
+            currentDrawingBox.style.top = `${top}px`;
+            currentDrawingBox.style.width = `${width}px`;
+            currentDrawingBox.style.height = `${height}px`;
+        }
+
+        function finishDrawing(e) {
+            if (!isDrawing || !currentDrawingBox) return;
+            
+            isDrawing = false;
+            
+            // 이벤트 리스너 제거
+            document.removeEventListener('mousemove', continueDrawing);
+            document.removeEventListener('mouseup', finishDrawing);
+            
+            // 바운딩 박스 크기 확인
+            const width = parseInt(currentDrawingBox.style.width);
+            const height = parseInt(currentDrawingBox.style.height);
+            
+            if (width < 10 || height < 10) {
+                // 너무 작은 박스는 삭제
+                currentDrawingBox.remove();
+                currentDrawingBox = null;
+                return;
+            }
+            
+            // 새 예측 추가
+            const img = document.getElementById('editImage');
+            const left = parseInt(currentDrawingBox.style.left);
+            const top = parseInt(currentDrawingBox.style.top);
+            
+            const normalizedBbox = [
+                left / img.offsetWidth,
+                top / img.offsetHeight,
+                width / img.offsetWidth,
+                height / img.offsetHeight
+            ];
+            
+            const newClassId = parseInt(document.getElementById('newBboxClass').value);
+            const newPrediction = {
+                class_id: newClassId,
+                class_name: classNames[newClassId],
+                confidence: 0.8,
+                bbox: normalizedBbox
+            };
+            
+            currentEditingImage.predictions.push(newPrediction);
+            
+            // 그리기 박스 제거
+            currentDrawingBox.remove();
+            currentDrawingBox = null;
+            
+            // 화면 업데이트
+            renderEditingBboxes();
+            updatePredictionsList();
+        }
+
+        function handleBboxMouseDown(e) {
+            if (currentTool === 'delete') {
+                const index = parseInt(e.target.dataset.predIndex);
+                deleteBbox(index);
+                return;
+            }
+            
+            if (currentTool !== 'select') return;
+            
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const index = parseInt(e.target.dataset.predIndex);
+            selectBbox(index);
+            
+            // 리사이즈 핸들 클릭 확인
+            if (e.target.classList.contains('resize-handle')) {
+                isResizing = true;
+                resizeHandle = e.target.dataset.position;
+                document.addEventListener('mousemove', handleResize);
+                document.addEventListener('mouseup', stopResize);
+                return;
+            }
+            
+            // 드래그 시작
+            isDragging = true;
+            const rect = e.target.getBoundingClientRect();
+            const containerRect = e.target.parentElement.getBoundingClientRect();
+            
+            const offsetX = e.clientX - rect.left;
+            const offsetY = e.clientY - rect.top;
+            
+            function handleDrag(e) {
+                if (!isDragging) return;
+                
+                const newLeft = e.clientX - containerRect.left - offsetX;
+                const newTop = e.clientY - containerRect.top - offsetY;
+                
+                e.target.style.left = `${Math.max(0, newLeft)}px`;
+                e.target.style.top = `${Math.max(0, newTop)}px`;
+                
+                updatePredictionFromBbox(index, e.target);
+            }
+            
+            function stopDrag() {
+                isDragging = false;
+                document.removeEventListener('mousemove', handleDrag);
+                document.removeEventListener('mouseup', stopDrag);
+            }
+            
+            document.addEventListener('mousemove', handleDrag);
+            document.addEventListener('mouseup', stopDrag);
+        }
+
+        function handleResize(e) {
+            if (!isResizing || selectedBboxIndex < 0) return;
+            
+            const bbox = document.querySelector(`[data-pred-index="${selectedBboxIndex}"]`);
+            const img = document.getElementById('editImage');
+            const rect = img.getBoundingClientRect();
+            
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            const currentLeft = parseInt(bbox.style.left);
+            const currentTop = parseInt(bbox.style.top);
+            const currentWidth = parseInt(bbox.style.width);
+            const currentHeight = parseInt(bbox.style.height);
+            
+            let newLeft = currentLeft;
+            let newTop = currentTop;
+            let newWidth = currentWidth;
+            let newHeight = currentHeight;
+            
+            switch (resizeHandle) {
+                case 'nw':
+                    newLeft = mouseX;
+                    newTop = mouseY;
+                    newWidth = currentLeft + currentWidth - mouseX;
+                    newHeight = currentTop + currentHeight - mouseY;
+                    break;
+                case 'ne':
+                    newTop = mouseY;
+                    newWidth = mouseX - currentLeft;
+                    newHeight = currentTop + currentHeight - mouseY;
+                    break;
+                case 'sw':
+                    newLeft = mouseX;
+                    newWidth = currentLeft + currentWidth - mouseX;
+                    newHeight = mouseY - currentTop;
+                    break;
+                case 'se':
+                    newWidth = mouseX - currentLeft;
+                    newHeight = mouseY - currentTop;
+                    break;
+            }
+            
+            // 최소 크기 제한
+            if (newWidth > 10 && newHeight > 10) {
+                bbox.style.left = `${Math.max(0, newLeft)}px`;
+                bbox.style.top = `${Math.max(0, newTop)}px`;
+                bbox.style.width = `${newWidth}px`;
+                bbox.style.height = `${newHeight}px`;
+                
+                updatePredictionFromBbox(selectedBboxIndex, bbox);
+            }
+        }
+
+        function stopResize() {
+            isResizing = false;
+            resizeHandle = null;
+            document.removeEventListener('mousemove', handleResize);
+            document.removeEventListener('mouseup', stopResize);
+        }
+
+        function updatePredictionFromBbox(index, bboxElement) {
+            const img = document.getElementById('editImage');
+            const left = parseInt(bboxElement.style.left);
+            const top = parseInt(bboxElement.style.top);
+            const width = parseInt(bboxElement.style.width);
+            const height = parseInt(bboxElement.style.height);
+            
+            const normalizedBbox = [
+                left / img.offsetWidth,
+                top / img.offsetHeight,
+                width / img.offsetWidth,
+                height / img.offsetHeight
+            ];
+            
+            currentEditingImage.predictions[index].bbox = normalizedBbox;
+            updatePredictionsList();
+        }
+
+        function selectBbox(index) {
+            selectedBboxIndex = index;
+            
+            // 기존 선택 해제
+            document.querySelectorAll('.bbox.selected').forEach(bbox => {
+                bbox.classList.remove('selected');
+            });
+            document.querySelectorAll('.prediction-editor.selected').forEach(pred => {
+                pred.classList.remove('selected');
+            });
+            
+            // 새 선택 적용
+            const bbox = document.querySelector(`[data-pred-index="${index}"]`);
+            if (bbox) bbox.classList.add('selected');
+            
+            const predEditor = document.querySelector(`.prediction-editor[data-pred-index="${index}"]`);
+            if (predEditor) predEditor.classList.add('selected');
+        }
+
+        function deleteBbox(index) {
+            if (confirm('이 바운딩 박스를 삭제하시겠습니까?')) {
+                currentEditingImage.predictions.splice(index, 1);
+                renderEditingBboxes();
+                updatePredictionsList();
+                selectedBboxIndex = -1;
+            }
+        }
+
+        function updatePredictionClass(index, classId) {
+            currentEditingImage.predictions[index].class_id = parseInt(classId);
+            currentEditingImage.predictions[index].class_name = classNames[classId];
+            renderEditingBboxes();
+            updatePredictionsList();
+        }
+
+        function updatePredictionConfidence(index, confidence) {
+            currentEditingImage.predictions[index].confidence = parseFloat(confidence);
+            renderEditingBboxes();
+            updatePredictionsList();
+        }
+
+        function updateBboxCoord(index, coordIndex, value) {
+            currentEditingImage.predictions[index].bbox[coordIndex] = parseFloat(value);
+            renderEditingBboxes();
+        }
+
+        function addNewBbox() {
+            const newClassId = parseInt(document.getElementById('newBboxClass').value);
+            const newPrediction = {
+                class_id: newClassId,
+                class_name: classNames[newClassId],
+                confidence: 0.8,
+                bbox: [0.1, 0.1, 0.2, 0.2] // 기본 위치와 크기
+            };
+            
+            currentEditingImage.predictions.push(newPrediction);
+            renderEditingBboxes();
+            updatePredictionsList();
+        }
+
+        function saveEdits() {
+            if (!currentEditingImage) return;
+            
+            // 서버에 업데이트 전송
+            fetch('/api/update-predictions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    imageId: currentEditingImage.id,
+                    predictions: currentEditingImage.predictions
+                })
+            }).then(() => {
+                alert('변경사항이 저장되었습니다.');
+                originalPredictions = JSON.parse(JSON.stringify(currentEditingImage.predictions));
+                filterImages(); // 카드 뷰 업데이트
+            }).catch(error => {
+                console.error('저장 실패:', error);
+                alert('저장에 실패했습니다.');
+            });
+        }
+
+        function resetEdits() {
+            if (confirm('모든 변경사항을 취소하고 원래 상태로 되돌리시겠습니까?')) {
+                currentEditingImage.predictions = JSON.parse(JSON.stringify(originalPredictions));
+                renderEditingBboxes();
+                updatePredictionsList();
+                selectedBboxIndex = -1;
+            }
+        }
+
+        // 기존 함수들
+        function approveImage(imageId) {
+            updateImageStatus(imageId, 'approved');
+        }
+
+        function rejectImage(imageId) {
+            updateImageStatus(imageId, 'rejected');
+        }
+
+        function updateImageStatus(imageId, status) {
+            const item = reviewData.find(item => item.id === imageId);
+            if (item) {
+                item.status = status;
+                
+                fetch('/api/update-status', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ imageId, status })
+                }).catch(error => {
+                    console.error('상태 업데이트 실패:', error);
+                });
+                
+                updateStats();
+                filterImages();
+            }
+        }
+
+        function updateStats() {
+            stats.total = reviewData.length;
+            stats.approved = reviewData.filter(item => item.status === 'approved').length;
+            stats.rejected = reviewData.filter(item => item.status === 'rejected').length;
+            stats.pending = stats.total - stats.approved - stats.rejected;
+            
+            document.getElementById('totalImages').textContent = stats.total;
+            document.getElementById('approvedImages').textContent = stats.approved;
+            document.getElementById('rejectedImages').textContent = stats.rejected;
+            
+            const progress = stats.total > 0 ? ((stats.approved + stats.rejected) / stats.total * 100) : 0;
+            document.getElementById('progressPercent').textContent = `${progress.toFixed(1)}%`;
+            document.getElementById('progressFill').style.width = `${progress}%`;
+        }
+
+        function showBatchActions() {
+            document.getElementById('batchModal').style.display = 'block';
+        }
+
+        function batchApprove() {
+            const threshold = parseFloat(document.getElementById('batchConfidence').value);
+            reviewData.forEach(item => {
+                if (item.confidence_avg >= threshold && item.status === 'pending') {
+                    item.status = 'approved';
+                }
+            });
+            
+            updateStats();
+            filterImages();
+            document.getElementById('batchModal').style.display = 'none';
+        }
+
+        function batchReject() {
+            const threshold = parseFloat(document.getElementById('batchConfidence').value);
+            reviewData.forEach(item => {
+                if (item.confidence_avg < threshold && item.status === 'pending') {
+                    item.status = 'rejected';
+                }
+            });
+            
+            updateStats();
+            filterImages();
+            document.getElementById('batchModal').style.display = 'none';
+        }
+
+        function exportResults() {
+            const results = {
+                timestamp: new Date().toISOString(),
+                stats: stats,
+                approved: reviewData.filter(item => item.status === 'approved'),
+                rejected: reviewData.filter(item => item.status === 'rejected')
+            };
+            
+            const blob = new Blob([JSON.stringify(results, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `review_results_${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'block' : 'none';
+            document.getElementById('imageGrid').style.display = show ? 'none' : 'grid';
+        }
+
+        // 주기적으로 새로운 이미지 확인
+        setInterval(() => {
+            if (!currentEditingImage) { // 편집 중이 아닐 때만
+                loadImages();
+            }
+        }, 30000);
+    </script>
+</body>
+</html>

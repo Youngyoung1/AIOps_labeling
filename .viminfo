@@ -12,7 +12,7 @@
 ~h
 # 명령 행 히스토리 (새것부터 오래된 것 순):
 :wq
-|2,0,1757633638,,"wq"
+|2,0,1757633866,,"wq"
 
 # 찾을 문자열 히스토리 (새것부터 오래된 것 순):
 
@@ -23,18 +23,33 @@
 # 디버그 행 히스토리 (새것부터 오래된 것 순):
 
 # 레지스터:
+"w	CHAR	0
+	��a��a�kb\�kb�kb�kb
+|3,0,32,0,1,0,1757633864,"��a��a�kb\\�kb�kb�kb"
 
 # 파일 마크:
-'0  6  0  ~/.git/MERGE_MSG
-|4,48,6,0,1757633638,"~/.git/MERGE_MSG"
+'0  1  0  ~/.git/COMMIT_EDITMSG
+|4,48,1,0,1757633866,"~/.git/COMMIT_EDITMSG"
+'1  6  0  ~/.git/MERGE_MSG
+|4,49,6,0,1757633638,"~/.git/MERGE_MSG"
 
 # 점프목록 (새것이 먼저):
+-'  1  0  ~/.git/COMMIT_EDITMSG
+|4,39,1,0,1757633866,"~/.git/COMMIT_EDITMSG"
+-'  6  0  ~/.git/MERGE_MSG
+|4,39,6,0,1757633638,"~/.git/MERGE_MSG"
 -'  6  0  ~/.git/MERGE_MSG
 |4,39,6,0,1757633638,"~/.git/MERGE_MSG"
 -'  1  0  ~/.git/MERGE_MSG
 |4,39,1,0,1757633620,"~/.git/MERGE_MSG"
+-'  1  0  ~/.git/MERGE_MSG
+|4,39,1,0,1757633620,"~/.git/MERGE_MSG"
 
 # 파일내의 마크 히스토리 (새것부터 오래된 순):
+
+> ~/.git/COMMIT_EDITMSG
+	*	1757633864	0
+	"	1	0
 
 > ~/.git/MERGE_MSG
 	*	1757633635	0

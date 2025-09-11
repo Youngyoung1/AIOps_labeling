@@ -3308,8 +3308,6 @@ class LabelingWidget(LabelDialog):
                 item = self.flag_widget.item(i)
                 flags[item.text()] = item.checkState() == Qt.Checked
 
-            # json_path 는 위에서 계산
-
             # LabelFile 사용해 저장 (imageData 제외)
             lf = LabelFile()
             lf.save(
@@ -3323,12 +3321,131 @@ class LabelingWidget(LabelDialog):
                 flags=flags,
             )
             self.label_file = lf
+            
+            # MongoDB 자동 저장 추가
+            self._save_to_mongodb(shapes_data, json_path)
+            
         except Exception as e:  # pragma: no cover
             logger.warning(f"조건부 JSON 저장 실패: {e}")
             # JSON 실패해도 YOLO 는 이미 저장되었으므로 True 반환
             return True
 
         return True
+
+    def _save_to_mongodb(self, shapes_data, json_path):
+        """MongoDB에 이미지와 어노테이션 정보 저장"""
+        try:
+            # 부모 윈도우에서 MongoDB 클라이언트 가져오기 (MainWindow -> LabelingWrapper -> LabelingWidget)
+            mongo_storage = None
+            if hasattr(self, 'parent'):
+                wrapper = self.parent()
+                if wrapper and hasattr(wrapper, 'parent'):
+                    main_window = wrapper.parent
+                    if main_window and hasattr(main_window, 'mongo_storage'):
+                        mongo_storage = main_window.mongo_storage
+            
+            if not mongo_storage:
+                return  # MongoDB 연결이 없으면 건너뛰기
+                
+            import os.path as osp
+            from datetime import datetime
+            
+            # 이미지 정보 저장/업데이트
+            image_filename = osp.basename(self.image_path)
+            image_doc = {
+                'image_id': image_filename,
+                'filename': image_filename,
+                'width': self.image.width() if self.image else 0,
+                'height': self.image.height() if self.image else 0,
+                'path': self.image_path,
+                'json_path': json_path,
+                'updated_at': datetime.now(),
+                'status': '라벨링 완료'
+            }
+            
+            # 기존 이미지 업데이트 또는 새로 삽입
+            mongo_storage.images.update_one(
+                {'image_id': image_filename},
+                {'$set': image_doc},
+                upsert=True
+            )
+            
+            # 기존 어노테이션 삭제 (동일 이미지)
+            mongo_storage.annotations.delete_many({'image_id': image_filename})
+            
+            # 새 어노테이션들 저장
+            annotation_count = 0
+            if shapes_data:
+                for i, shape in enumerate(shapes_data):
+                    annotation_doc = {
+                        'annotation_id': f"{image_filename}_{i}_{int(datetime.now().timestamp())}",
+                        'image_id': image_filename,
+                        'label': shape.get('label', ''),
+                        'category': shape.get('label', ''),
+                        'shape_type': shape.get('shape_type', ''),
+                        'points': shape.get('points', []),
+                        'confidence': shape.get('score', 0.0) if shape.get('score') else 0.0,
+                        'bbox': self._calculate_bbox(shape.get('points', [])),
+                        'area': self._calculate_area(shape.get('points', [])),
+                        'difficult': shape.get('difficult', False),
+                        'group_id': shape.get('group_id', None),
+                        'description': shape.get('description', ''),
+                        'attributes': shape.get('attributes', {}),
+                        'flags': shape.get('flags', {}),
+                        'created_at': datetime.now(),
+                        'review_status': '1차 검수 요청 전',
+                        'reviewer': None
+                    }
+                    
+                    # 어노테이션 저장
+                    mongo_storage.annotations.insert_one(annotation_doc)
+                    annotation_count += 1
+            
+            # 이미지 문서에 어노테이션 개수 업데이트
+            mongo_storage.images.update_one(
+                {'image_id': image_filename},
+                {'$set': {'annotation_count': annotation_count}}
+            )
+            
+            logger.info(f"MongoDB 저장 완료: {image_filename}, {annotation_count}개 어노테이션")
+            
+            # 디버그용: 성공 메시지 (선택사항)
+            if self._config.get("show_mongodb_save_notification", False):
+                self.status_bar.showMessage(f"MongoDB 저장 완료: {annotation_count}개 어노테이션", 2000)
+            
+        except Exception as e:
+            logger.warning(f"MongoDB 저장 중 오류: {e}")
+            # 구체적인 오류 내용 로깅
+            import traceback
+            logger.debug(f"MongoDB 저장 오류 상세: {traceback.format_exc()}")
+    
+    def _calculate_bbox(self, points):
+        """포인트에서 바운딩 박스 계산"""
+        if not points or len(points) < 2:
+            return [0, 0, 0, 0]
+        
+        x_coords = [p[0] for p in points]
+        y_coords = [p[1] for p in points]
+        
+        xmin, xmax = min(x_coords), max(x_coords)
+        ymin, ymax = min(y_coords), max(y_coords)
+        
+        return [xmin, ymin, xmax - xmin, ymax - ymin]  # [x, y, width, height]
+    
+    def _calculate_area(self, points):
+        """포인트에서 면적 계산"""
+        if not points or len(points) < 3:
+            return 0.0
+        
+        # Shoelace formula for polygon area
+        n = len(points)
+        area = 0.0
+        for i in range(n):
+            j = (i + 1) % n
+            area += points[i][0] * points[j][1]
+            area -= points[j][0] * points[i][1]
+        
+        return abs(area) / 2.0
 
     def duplicate_selected_shape(self):
         added_shapes = self.canvas.duplicate_selected_shapes()

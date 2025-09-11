@@ -249,4 +249,27 @@ def main():
 
 # this main block is required to generate executable by pyinstaller
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Robust startup error handling: write traceback to a log file and show a concise message.
+        import traceback
+        tb = traceback.format_exc()
+        try:
+            log_path = os.path.join(os.path.expanduser("~"), "x-anylabeling-error.log")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(tb)
+        except Exception:
+            log_path = None
+
+        # Try to display a message box if possible; fall back to printing.
+        try:
+            from PyQt5.QtWidgets import QApplication, QMessageBox
+            app = QApplication.instance() or QApplication(sys.argv)
+            msg = f"시작 중 오류가 발생했습니다.\n\n{e}"
+            if log_path:
+                msg += f"\n\n자세한 내용은 로그 파일을 확인하세요:\n{log_path}"
+            QMessageBox.critical(None, "애플리케이션 오류", msg)
+        except Exception:
+            print("Fatal error during startup:\n", tb)
+        sys.exit(1)

@@ -13,7 +13,6 @@ os.environ["QT_LOGGING_RULES"] = "*.debug=false;qt.gui.icc=false"
 import argparse
 import codecs
 import logging
-
 import sys
 from pathlib import Path
 
@@ -31,6 +30,7 @@ from anylabeling.views.labeling.utils import new_icon, gradient_text
 from anylabeling.views.labeling.utils.update_checker import (
     check_for_updates_async,
 )
+from anylabeling.services.bidirectional_sync import BidirectionalSyncService
 
 # NOTE: Do not remove this import, it is required for loading translations
 from anylabeling.resources import resources
@@ -209,67 +209,80 @@ def main():
     )  # use highdpi icons
     QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_ShareOpenGLContexts)
 
+    # Create QApplication
     app = QtWidgets.QApplication(sys.argv)
-    app.processEvents()
-
-    app.setApplicationName(__appname__)
-    app.setApplicationVersion(__version__)
+    
+    # Set application icon
     app.setWindowIcon(new_icon("icon"))
+    
+    # Install translator after QApplication exists
     if loaded_language:
         app.installTranslator(translator)
-    else:
-        logger.warning(
-            f"Failed to load translation for {language}. "
-            "Using default language.",
-        )
-    win = MainWindow(
-        app,
+        # Keep a reference to avoid translator being GC'd
+        app._xanylabeling_translator = translator
+
+    # Create main window
+    window = MainWindow(
+        app=app,
         config=config,
         filename=filename,
+        output=output,
         output_file=output_file,
         output_dir=output_dir,
     )
 
-    if reset_config:
-        logger.info(f"Resetting Qt config: {win.settings.fileName()}")
-        win.settings.clear()
-        sys.exit(0)
+    # Show window
+    window.show()
+    window.raise_()
+    window.activateWindow()
 
+    # Enable bidirectional sync (JSON ↔ MongoDB)
+    try:
+        sync_service = BidirectionalSyncService(window)
+
+        # Determine watch directories from inputs
+        watch_dirs = set()
+        try:
+            if filename:
+                if os.path.isdir(filename):
+                    watch_dirs.add(os.path.abspath(filename))
+                elif os.path.isfile(filename):
+                    watch_dirs.add(os.path.dirname(os.path.abspath(filename)))
+        except Exception:
+            pass
+
+        if output_dir:
+            try:
+                watch_dirs.add(os.path.abspath(output_dir))
+            except Exception:
+                pass
+
+        # Fallback to current working directory if nothing else
+        if not watch_dirs:
+            try:
+                watch_dirs.add(os.path.abspath(os.getcwd()))
+            except Exception:
+                pass
+
+        for d in watch_dirs:
+            if d and os.path.exists(d):
+                sync_service.add_watch_directory(d)
+
+        # Start and inject into window if MongoDB available
+        if sync_service.start():
+            window.set_bidirectional_sync_service(sync_service)
+        else:
+            logger.debug("Bidirectional sync not started (missing MongoDB connection or no watch dirs)")
+    except Exception as e:
+        logger.debug(f"Bidirectional sync initialization skipped: {e}")
+
+    # Check for updates if enabled
     if not no_auto_update_check:
+        check_for_updates_async()
 
-        def delayed_update_check():
-            check_for_updates_async(timeout=5)
-
-        QtCore.QTimer.singleShot(2000, delayed_update_check)
-
-    win.showMaximized()
-    win.raise_()
-    sys.exit(app.exec())
+    sys.exit(app.exec_())
 
 
 # this main block is required to generate executable by pyinstaller
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        # Robust startup error handling: write traceback to a log file and show a concise message.
-        import traceback
-        tb = traceback.format_exc()
-        try:
-            log_path = os.path.join(os.path.expanduser("~"), "x-anylabeling-error.log")
-            with open(log_path, "w", encoding="utf-8") as f:
-                f.write(tb)
-        except Exception:
-            log_path = None
-
-        # Try to display a message box if possible; fall back to printing.
-        try:
-            from PyQt5.QtWidgets import QApplication, QMessageBox
-            app = QApplication.instance() or QApplication(sys.argv)
-            msg = f"시작 중 오류가 발생했습니다.\n\n{e}"
-            if log_path:
-                msg += f"\n\n자세한 내용은 로그 파일을 확인하세요:\n{log_path}"
-            QMessageBox.critical(None, "애플리케이션 오류", msg)
-        except Exception:
-            print("Fatal error during startup:\n", tb)
-        sys.exit(1)
+    main()

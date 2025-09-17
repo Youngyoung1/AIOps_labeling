@@ -20,3 +20,4 @@ jsonlines
 json_repair
 importlib_metadata
 markdown
+pymongo>=4.6.0

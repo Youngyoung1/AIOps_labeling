@@ -2,6 +2,7 @@
 import sys
 import json
 import random
+import time
 from datetime import datetime, timedelta
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, 
@@ -11,11 +12,13 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtCore import Qt, QDate, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QPalette, QColor, QPixmap, QIcon
 
-# MongoDB 스토리지 연동 (가능하면 사용)
+# MongoDB AnnotationManager 연동
 try:
-    from anylabeling.services.storage.mongodb_client import MongoStorage
-except Exception:
-    MongoStorage = None
+    # 현재 파일 위치에서 상대 경로로 AnnotationManager import
+    from anylabeling.services.annotation_manager import AnnotationManager
+except Exception as e:
+    print(f"AnnotationManager import 실패: {e}")
+    AnnotationManager = None
 
 class StatusBadgeWidget(QWidget):
     """검수 상태 배지 위젯"""
@@ -111,25 +114,7 @@ class ActionButtonWidget(QWidget):
             complete_btn.clicked.connect(lambda: self.review_requested.emit(self.annotation_id, "complete_first"))
             layout.addWidget(complete_btn)
             
-            # 거부 버튼 추가
-            reject_btn = QPushButton("거부")
-            reject_btn.setStyleSheet("""
-                QPushButton { 
-                    background: #ef4444; 
-                    color: white; 
-                    border: none; 
-                    padding: 8px 16px; 
-                    border-radius: 6px; 
-                    font-weight: bold; 
-                    font-size: 12px;
-                    min-width: 60px;
-                } 
-                QPushButton:hover { 
-                    background: #dc2626; 
-                }
-            """)
-            reject_btn.clicked.connect(lambda: self.review_requested.emit(self.annotation_id, "reject_first"))
-            layout.addWidget(reject_btn)
+            # (반려 버튼은 공통 버튼 영역에서 추가)
             
         elif self.status == '1차 검수 완료':
             btn = QPushButton("2차 검수 요청")
@@ -245,7 +230,26 @@ class ActionButtonWidget(QWidget):
                 separator.setFrameShape(QFrame.VLine)
                 separator.setStyleSheet("color: #e5e7eb;")
                 layout.addWidget(separator)
-            
+
+            # 반려 버튼 (한 단계 이전으로 되돌림)
+            reject_flow_btn = QPushButton("⏮ 반려")
+            reject_flow_btn.setStyleSheet("""
+                QPushButton { 
+                    background: #ef4444; 
+                    color: white; 
+                    border: none; 
+                    padding: 8px 14px; 
+                    border-radius: 6px; 
+                    font-weight: bold; 
+                    font-size: 12px;
+                    min-width: 80px;
+                } 
+                QPushButton:hover { 
+                    background: #dc2626; 
+                }
+            """)
+            reject_flow_btn.clicked.connect(lambda: self.review_requested.emit(self.annotation_id, "reject_flow"))
+
             # 사진 보기 버튼
             view_btn = QPushButton("사진 보기")
             view_btn.setStyleSheet("""
@@ -263,6 +267,7 @@ class ActionButtonWidget(QWidget):
                     background: #d97706; 
                 }
             """)
+
             view_btn.clicked.connect(lambda: self.review_requested.emit(self.annotation_id, "view_image"))
             
             # 삭제 버튼
@@ -286,6 +291,7 @@ class ActionButtonWidget(QWidget):
             """)
             delete_btn.clicked.connect(lambda: self.review_requested.emit(self.annotation_id, "delete"))
             
+            layout.addWidget(reject_flow_btn)
             layout.addWidget(view_btn)
             layout.addWidget(delete_btn)
         
@@ -340,33 +346,75 @@ class AnnotationDetailDialog(QMessageBox):
 class LabelMeReviewSearch(QMainWindow):
     def __init__(self):
         super().__init__()
-        # 데이터 소스 초기화 (Mongo 우선, 실패시 샘플)
+        # 데이터 소스 초기화 (AnnotationManager 기반)
         self.sample_data = []
         self.filtered_data = []
-        self.mongo = None
-        self._init_mongo_and_load()
+        self.annotation_manager = None  # AnnotationManager 인스턴스
+
+        # UI 먼저 띄우고, 이후 데이터 로드(초기 체감 반응 개선)
         self.setup_ui()
+
+        # 시작 시 MongoDB AnnotationManager를 통해 데이터 로드
+        def _startup_loader():
+            self.result_label.setText("검색 결과: 0개 (로딩 중…)")
+            try:
+                # PyMongo 설치 여부 사전 점검
+                try:
+                    import pymongo  # noqa: F401
+                except ImportError:
+                    raise RuntimeError("PyMongo 미설치: requirements에 pymongo 추가 및 설치 필요")
+                
+                # AnnotationManager 초기화
+                self._init_annotation_manager()
+                
+                if not self.annotation_manager:
+                    raise RuntimeError("AnnotationManager 초기화 실패")
+                
+                # MongoDB에서 데이터 로드
+                self._load_data_from_mongo()
+                self.filtered_data = [
+                    item for item in self.sample_data
+                    if item.get('review_status', '') != '최종 승인'
+                ]
+                self.load_table_data()
+                self._refresh_label_filter_items()
+                self.result_label.setText(f"검색 결과: {len(self.filtered_data)}개")
+                return
+            except Exception as e:
+                # 구체 원인 포함 안내
+                print(f"MongoDB 데이터 로드 실패: {e}")
+                QMessageBox.critical(self, "DB 연결 실패", f"MongoDB 데이터 로드에 실패하였습니다.\n사유: {str(e)}")
+                # 실패 시에는 샘플 데이터 사용하지 않고 빈 상태로 둠
+                self.sample_data = []
+                self.filtered_data = []
+                self.load_table_data()
+                self._refresh_label_filter_items()
+                self.result_label.setText("DB 연결에 실패하였습니다.")
+
+        # 타이머에서 호출되는 초기 로더를 위 함수로 대체
+        self._init_mongo_and_load_and_refresh = _startup_loader
+        QTimer.singleShot(0, self._init_mongo_and_load_and_refresh)
     
     def setup_ui(self):
         self.setWindowTitle("LabelMe 어노테이션 검수 관리 시스템 (개선된 워크플로우)")
         self.setGeometry(100, 100, 1600, 900)
-        
+
         # 메인 위젯
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
-        
+
         # 메인 레이아웃
         main_layout = QVBoxLayout()
         main_widget.setLayout(main_layout)
-        
+
         # 헤더
         header = self.create_header()
         main_layout.addWidget(header)
-        
+
         # 검색 패널
         search_panel = self.create_search_panel()
         main_layout.addWidget(search_panel)
-        
+
         # 결과 정보
         self.result_label = QLabel("검색 결과: 20개")
         self.result_label.setStyleSheet("""
@@ -381,16 +429,20 @@ class LabelMeReviewSearch(QMainWindow):
             }
         """)
         main_layout.addWidget(self.result_label)
-        
+
         # 테이블
         self.table = self.create_table()
         main_layout.addWidget(self.table)
-        
-        # 초기 데이터 로드
-        self.load_table_data()
-        # 라벨 필터 동적 갱신
-        self._refresh_label_filter_items()
-        
+
+        # 필터 디바운서(입력 중 과도한 재계산 방지)
+        self.filter_timer = QTimer(self)
+        self.filter_timer.setSingleShot(True)
+        self.filter_timer.setInterval(250)
+        self.filter_timer.timeout.connect(self._apply_filter)
+
+        # 초기 텍스트
+        self.result_label.setText("검색 결과: 0개 (로딩 중…)")
+
         # 스타일 적용
         self.apply_styles()
     
@@ -441,9 +493,9 @@ class LabelMeReviewSearch(QMainWindow):
                 color: #1e293b;
             }
         """)
-        
+
         layout = QFormLayout()
-        
+
         # 검수 상태 - 대기중 제거
         self.review_status_combo = QComboBox()
         self.review_status_combo.addItems([
@@ -451,18 +503,38 @@ class LabelMeReviewSearch(QMainWindow):
             "2차 검수 요청", "2차 검수 완료"
         ])
         self.review_status_combo.currentTextChanged.connect(self.filter_data)
-        
+
         # 라벨 (검출된 객체)
         self.label_combo = QComboBox()
         # 최초엔 기본값만, 데이터 로드 후 동적으로 채움
         self.label_combo.addItems(["모든 라벨"]) 
         self.label_combo.currentTextChanged.connect(self.filter_data)
         
+        # 라벨 상세 정보 버튼 추가
+        label_widget = QWidget()
+        label_layout = QHBoxLayout()
+        label_layout.setContentsMargins(0, 0, 0, 0)
+        label_layout.addWidget(self.label_combo)
+        
+        label_detail_btn = QPushButton("📋")
+        label_detail_btn.setToolTip("선택된 라벨의 상세 정보 보기")
+        label_detail_btn.setMaximumWidth(30)
+        label_detail_btn.clicked.connect(self.show_label_detail)
+        label_detail_btn.setStyleSheet("""
+            QPushButton {
+                background: #3b82f6; color: white; border: none;
+                border-radius: 4px; font-weight: bold; font-size: 12px;
+            }
+            QPushButton:hover { background: #2563eb; }
+        """)
+        label_layout.addWidget(label_detail_btn)
+        label_widget.setLayout(label_layout)
+
         # 파일명
         self.filename_edit = QLineEdit()
         self.filename_edit.setPlaceholderText("파일명을 입력하세요 (예: 231012)")
         self.filename_edit.textChanged.connect(self.filter_data)
-        
+
         # 날짜 범위
         date_widget = QWidget()
         date_layout = QHBoxLayout()
@@ -476,43 +548,48 @@ class LabelMeReviewSearch(QMainWindow):
         date_layout.addWidget(QLabel(" ~ "))
         date_layout.addWidget(self.end_date)
         date_widget.setLayout(date_layout)
-        
+
         # 폼에 추가
         layout.addRow("검수 상태:", self.review_status_combo)
-        layout.addRow("객체 라벨:", self.label_combo)
+        layout.addRow("객체 라벨:", label_widget)
         layout.addRow("파일명:", self.filename_edit)
         layout.addRow("생성 날짜:", date_widget)
-        
+
         # 버튼들
         button_layout = QHBoxLayout()
-        
+
         search_btn = QPushButton("🔍 검색")
         search_btn.clicked.connect(self.manual_search)
         search_btn.setStyleSheet(self.get_button_style("#4f46e5", "#3730a3"))
-        
+
         reset_btn = QPushButton("🔄 초기화")
         reset_btn.clicked.connect(self.reset_filters)
         reset_btn.setStyleSheet(self.get_button_style("#6b7280", "#4b5563"))
-        
+
         export_btn = QPushButton("📤 JSON 내보내기")
         export_btn.clicked.connect(self.export_json)
         export_btn.setStyleSheet(self.get_button_style("#059669", "#047857"))
-        
-        stats_btn = QPushButton("📊 통계 보기")
-        stats_btn.clicked.connect(self.show_statistics)
+
+        stats_btn = QPushButton("📊 어노테이션 통계")
+        stats_btn.clicked.connect(self.show_annotation_statistics)
         stats_btn.setStyleSheet(self.get_button_style("#7c2d12", "#6b21a8"))
         
+        search_advanced_btn = QPushButton("🔍 고급 검색")
+        search_advanced_btn.clicked.connect(self.show_advanced_search)
+        search_advanced_btn.setStyleSheet(self.get_button_style("#059669", "#047857"))
+
         button_layout.addWidget(search_btn)
         button_layout.addWidget(reset_btn)
         button_layout.addWidget(export_btn)
         button_layout.addWidget(stats_btn)
+        button_layout.addWidget(search_advanced_btn)
         button_layout.addStretch()
-        
+
         main_layout = QVBoxLayout()
         main_layout.addLayout(layout)
         main_layout.addLayout(button_layout)
         group.setLayout(main_layout)
-        
+
         return group
     
     def get_button_style(self, bg_color, hover_color):
@@ -639,22 +716,50 @@ class LabelMeReviewSearch(QMainWindow):
         return data
 
     # -------------------- Mongo 연동 --------------------
-    def _init_mongo_and_load(self):
-        """Mongo 연결 시도 후 데이터 로드. 실패 시 샘플 데이터 사용"""
+    def _init_mongo_and_load_and_refresh(self):
+        """UI 표시 후 데이터를 로드하고 화면을 갱신"""
+        self.result_label.setText("검색 결과: 0개 (로딩 중…)")
+        self._init_mongo_and_load()
+        # 승인 완료 제외 리스트로 초기화
+        self.filtered_data = [
+            item for item in self.sample_data
+            if item.get('review_status', '') != '최종 승인'
+        ]
+        self.load_table_data()
+        self._refresh_label_filter_items()
+        self.result_label.setText(f"검색 결과: {len(self.filtered_data)}개")
+    def _init_annotation_manager(self):
+        """AnnotationManager 초기화"""
         try:
-            if MongoStorage is None:
-                raise RuntimeError("MongoStorage 사용 불가")
-            self.mongo = MongoStorage()
-            if not self.mongo.test_connection():
-                raise RuntimeError("MongoDB 연결 실패")
+            if not AnnotationManager:
+                print("Warning: AnnotationManager를 import할 수 없습니다.")
+                return
+            
+            # 기본 설정으로 AnnotationManager 초기화
+            self.annotation_manager = AnnotationManager()
+            print("AnnotationManager 초기화 완료")
+                
+        except Exception as e:
+            print(f"AnnotationManager 초기화 실패: {e}")
+            self.annotation_manager = None
+
+    def _init_mongo_and_load(self):
+        """AnnotationManager를 통한 데이터 로드"""
+        try:
+            # AnnotationManager 초기화
+            self._init_annotation_manager()
+            
+            if not self.annotation_manager:
+                raise RuntimeError("AnnotationManager 초기화 실패")
+            
+            # MongoDB에서 데이터 로드
             self._load_data_from_mongo()
-        except Exception:
-            # 폴백: 샘플 데이터
-            self.sample_data = self.generate_labelme_data()
-            self.filtered_data = [
-                item for item in self.sample_data
-                if item.get('review_status', '') != '최종 승인'
-            ]
+            
+        except Exception as e:
+            print(f"데이터 로드 실패: {e}")
+            # 실패 시 빈 상태 유지
+            self.sample_data = []
+            self.filtered_data = []
 
     def _resolve_overall_status(self, statuses):
         """여러 어노테이션 상태로부터 대표 상태 결정"""
@@ -672,64 +777,77 @@ class LabelMeReviewSearch(QMainWindow):
         return "1차 검수 요청 전"
 
     def _load_data_from_mongo(self):
-        """MongoDB에서 이미지 기준으로 데이터 집계 후 self.sample_data 채움"""
+        """MongoDB AnnotationManager에서 실제 데이터를 가져와서 self.sample_data 채움"""
         from datetime import datetime as _dt
-        pipeline = [
-            {"$lookup": {
-                "from": "images",
-                "localField": "image_id",
-                "foreignField": "image_id",
-                "as": "image_info"
-            }},
-            {"$unwind": {"path": "$image_info", "preserveNullAndEmptyArrays": True}},
-            {"$project": {
-                "image_id": 1,
-                "label": 1,
-                "review_status": 1,
-                "created_at": 1,
-                "imagePath": {"$ifNull": ["$image_info.filename", "$image_id"]},
-                "file_path": {"$ifNull": ["$image_info.file_path", "$image_info.path"]}
-            }},
-            {"$group": {
-                "_id": "$image_id",
-                "labels": {"$push": "$label"},
-                "statuses": {"$push": "$review_status"},
-                "created_at": {"$min": "$created_at"},
-                "imagePath": {"$first": "$imagePath"},
-                "file_path": {"$first": "$file_path"}
-            }}
-        ]
+        
         try:
-            aggr = list(self.mongo.annotations.aggregate(pipeline)) if self.mongo else []
-        except Exception:
-            aggr = []
-        items = []
-        for doc in aggr:
-            statuses = [s for s in (doc.get("statuses") or []) if s]
-            overall = self._resolve_overall_status(statuses)
-            if overall == "최종 승인":
-                continue  # UI에서 숨김
-            labels = doc.get("labels") or []
-            item = {
-                "_id": str(doc.get("_id")),  # image_id를 행 ID로 사용
-                "shapes": [{"label": l} for l in labels],
-                "imagePath": doc.get("imagePath") or str(doc.get("_id")),
-                "file_path": doc.get("file_path") or "",
-                "review_status": overall,
-                "created_at": doc.get("created_at") or _dt.now(),
-                "reviewer": "",
-            }
-            items.append(item)
-        # 없으면 폴백
-        if not items:
-            self.sample_data = self.generate_labelme_data()
-            self.filtered_data = [
-                item for item in self.sample_data
-                if item.get('review_status', '') != '최종 승인'
-            ]
-        else:
+            if not self.annotation_manager:
+                raise RuntimeError("AnnotationManager가 초기화되지 않았습니다")
+            
+            # AnnotationManager를 통해 모든 어노테이션 데이터 가져오기
+            # 검색 조건 없이 모든 데이터 조회 (빈 조건으로 검색)
+            all_annotations = self.annotation_manager.search_annotations({})
+            
+            if not all_annotations:
+                raise RuntimeError("DB에 어노테이션 데이터가 없습니다")
+            
+            items = []
+            for doc in all_annotations:
+                # MongoDB 문서를 UI에서 사용할 형태로 변환 (안전한 처리)
+                item = {
+                    "_id": str(doc.get("_id", "")),
+                    "version": doc.get("version", ""),
+                    "flags": doc.get("flags", {}),
+                    "shapes": doc.get("shapes", []),
+                    # imagePath가 None인 경우 안전하게 처리
+                    "imagePath": doc.get("imagePath") or doc.get("json_file_name", "알 수 없는 파일"),
+                    "imageData": doc.get("imageData"),
+                    "imageHeight": doc.get("imageHeight", 0),
+                    "imageWidth": doc.get("imageWidth", 0),
+                    
+                    # 🔧 이미지 경로 관련 필드들 추가 (사진 보기 기능을 위해 필수)
+                    "image_file_path": doc.get("image_file_path", ""),
+                    "image_file_name": doc.get("image_file_name", ""),
+                    "image_directory": doc.get("image_directory", ""),
+                    "image_exists": doc.get("image_exists", False),
+                    
+                    # JSON 파일 관련 필드들
+                    "json_file_path": doc.get("json_file_path", ""),
+                    "json_file_name": doc.get("json_file_name", ""),
+                    "json_directory": doc.get("json_directory", ""),
+                    "same_directory": doc.get("same_directory", True),
+                    
+                    # 기존 필드명 호환성 유지
+                    "file_path": doc.get("json_file_path", ""),
+                    
+                    # 검수 관련 필드 (기본값 설정)
+                    "review_status": doc.get("review_status", "1차 검수 요청 전"),
+                    "reviewer": doc.get("reviewer", ""),
+                    "created_at": doc.get("created_at", _dt.now()),
+                    "updated_at": doc.get("updated_at", _dt.now()),
+                    
+                    # 추가 검색 최적화 필드들
+                    "labels": doc.get("labels", []),
+                    "shape_count": doc.get("shape_count", 0),
+                    "label_count": doc.get("label_count", 0),
+                    "has_descriptions": doc.get("has_descriptions", False),
+                    "has_tags": doc.get("has_tags", False),
+                    "has_attributes": doc.get("has_attributes", False),
+                    "shape_types": doc.get("shape_types", []),
+                    "tags": doc.get("tags", [])
+                }
+                items.append(item)
+            
+            print(f"MongoDB에서 {len(items)}개의 어노테이션 데이터를 로드했습니다.")
+            
             self.sample_data = items
             self.filtered_data = items[:]
+            
+        except Exception as e:
+            print(f"MongoDB 데이터 로드 실패: {e}")
+            # 폴백으로 빈 데이터 사용
+            self.sample_data = []
+            self.filtered_data = []
 
     def _refresh_label_filter_items(self):
         """현재 데이터 기반으로 라벨 콤보 갱신"""
@@ -755,32 +873,41 @@ class LabelMeReviewSearch(QMainWindow):
 
     def load_table_data(self):
         """테이블 데이터 로드"""
+        # 대량 갱신 최적화
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
+        self.table.clearContents()
         self.table.setRowCount(len(self.filtered_data))
-        
+
         for i, item in enumerate(self.filtered_data):
-            # 파일명
-            self.table.setItem(i, 0, QTableWidgetItem(item.get('imagePath', '')))
-            
+            # 파일명 (안전한 처리)
+            image_path = item.get('imagePath') or 'N/A'
+            self.table.setItem(i, 0, QTableWidgetItem(str(image_path)))
+
             # 주요 라벨 (가장 많은 라벨)
-            labels = [shape.get('label', '') for shape in item.get('shapes', [])]
+            labels = [shape.get('label', '') for shape in item.get('shapes', []) if shape.get('label')]
             main_label = max(set(labels), key=labels.count) if labels else "없음"
             self.table.setItem(i, 1, QTableWidgetItem(main_label))
-            
+
             # 상태 배지
             status_widget = StatusBadgeWidget(item.get('review_status', '1차 검수 요청 전'))
             self.table.setCellWidget(i, 2, status_widget)
-            
-            # 생성일시
-            created_at = item.get('created_at', datetime.now())
-            self.table.setItem(i, 3, QTableWidgetItem(created_at.strftime('%Y-%m-%d %H:%M')))
-            
+
+            # 생성일시 (안전한 처리)
+            created_at = item.get('created_at')
+            if created_at and hasattr(created_at, 'strftime'):
+                date_str = created_at.strftime('%Y-%m-%d %H:%M')
+            else:
+                date_str = '날짜 없음'
+            self.table.setItem(i, 3, QTableWidgetItem(date_str))
+
             # 작업 버튼
-            action_widget = ActionButtonWidget(item['_id'], item.get('review_status', '1차 검수 요청 전'))
+            item_id = item.get('_id', f'unknown_{i}')
+            action_widget = ActionButtonWidget(str(item_id), item.get('review_status', '1차 검수 요청 전'))
             action_widget.review_requested.connect(self.handle_action)
             self.table.setCellWidget(i, 4, action_widget)
-        
-        # 컬럼 크기 조정
-        self.table.resizeColumnsToContents()
+
+        # 컬럼 폭은 고정값으로(매번 계산 비용 제거)
         self.table.setColumnWidth(0, 220)  # 파일명
         self.table.setColumnWidth(1, 140)  # 주요 라벨
         self.table.setColumnWidth(2, 160)  # 검수상태
@@ -792,11 +919,23 @@ class LabelMeReviewSearch(QMainWindow):
         # 라벨 콤보 갱신
         if hasattr(self, 'label_combo'):
             self._refresh_label_filter_items()
+
+        # 갱신 재개
+        self.table.setUpdatesEnabled(True)
+        self.table.setSortingEnabled(True)
+        self.table.viewport().update()
     
     def filter_data(self):
-        """데이터 필터링"""
+        """데이터 필터링(디바운스 스케줄)"""
+        if hasattr(self, 'filter_timer'):
+            self.filter_timer.start()
+        else:
+            self._apply_filter()
+
+    def _apply_filter(self):
+        """실제 필터 로직 수행"""
         filtered = []
-        
+
         for item in self.sample_data:
             # 승인 완료 항목은 항상 숨김
             if item.get('review_status', '') == '최종 승인':
@@ -805,20 +944,22 @@ class LabelMeReviewSearch(QMainWindow):
             if (self.review_status_combo.currentText() != "모든 상태" and 
                 item.get('review_status', '1차 검수 요청 전') != self.review_status_combo.currentText()):
                 continue
-            
+
             # 라벨 필터
             if self.label_combo.currentText() != "모든 라벨":
                 labels = [shape.get('label', '') for shape in item.get('shapes', [])]
                 if self.label_combo.currentText() not in labels:
                     continue
-            
+
             # 파일명 필터
-            if (self.filename_edit.text().strip() and 
-                self.filename_edit.text().strip().lower() not in item.get('imagePath', '').lower()):
-                continue
-            
+            if self.filename_edit.text().strip():
+                search_text = self.filename_edit.text().strip().lower()
+                image_path = item.get('imagePath') or ""
+                if search_text not in image_path.lower():
+                    continue
+
             filtered.append(item)
-        
+
         self.filtered_data = filtered
         self.load_table_data()
         self.result_label.setText(f"검색 결과: {len(filtered)}개")
@@ -859,6 +1000,311 @@ class LabelMeReviewSearch(QMainWindow):
             msg.exec_()
         except Exception as e:
             QMessageBox.critical(self, "내보내기 오류", f"파일 저장 중 오류가 발생했습니다: {str(e)}")
+    
+    def show_advanced_search(self):
+        """고급 검색 기능 다이얼로그"""
+        if not self.annotation_manager:
+            QMessageBox.information(self, "정보", "AnnotationManager가 연결되지 않았습니다.")
+            return
+        
+        # 간단한 고급 검색 다이얼로그
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QFormLayout
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("고급 검색")
+        dialog.setGeometry(300, 300, 500, 400)
+        
+        layout = QVBoxLayout()
+        
+        # 검색 조건들
+        form_layout = QFormLayout()
+        
+        # Shape 타입 검색
+        shape_combo = QComboBox()
+        try:
+            shape_types = self.annotation_manager.get_all_shape_types()
+            shape_combo.addItem("-- 모든 타입 --")
+            shape_combo.addItems(shape_types)
+        except:
+            shape_combo.addItem("-- 모든 타입 --")
+        form_layout.addRow("Shape 타입:", shape_combo)
+        
+        # 태그 검색
+        tag_combo = QComboBox()
+        try:
+            tags = self.annotation_manager.get_all_tags()
+            tag_combo.addItem("-- 모든 태그 --")
+            tag_combo.addItems(tags)
+        except:
+            tag_combo.addItem("-- 모든 태그 --")
+        form_layout.addRow("태그:", tag_combo)
+        
+        # 플래그 옵션들
+        from PyQt5.QtWidgets import QCheckBox
+        desc_check = QCheckBox("설명이 있는 어노테이션만")
+        difficult_check = QCheckBox("Difficult 표시된 어노테이션만")
+        attrs_check = QCheckBox("Attributes가 있는 어노테이션만")
+        
+        form_layout.addRow("필터 옵션:", desc_check)
+        form_layout.addRow("", difficult_check)
+        form_layout.addRow("", attrs_check)
+        
+        layout.addLayout(form_layout)
+        
+        # 결과 표시 영역
+        result_text = QTextEdit()
+        result_text.setMaximumHeight(200)
+        result_text.setPlaceholderText("검색 버튼을 클릭하면 결과가 표시됩니다.")
+        layout.addWidget(result_text)
+        
+        # 버튼들
+        button_layout = QHBoxLayout()
+        
+        search_btn = QPushButton("검색")
+        search_btn.clicked.connect(lambda: self._perform_advanced_search(
+            shape_combo.currentText(), tag_combo.currentText(),
+            desc_check.isChecked(), difficult_check.isChecked(), attrs_check.isChecked(),
+            result_text
+        ))
+        
+        close_btn = QPushButton("닫기")
+        close_btn.clicked.connect(dialog.close)
+        
+        button_layout.addWidget(search_btn)
+        button_layout.addWidget(close_btn)
+        button_layout.addStretch()
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        dialog.exec_()
+    
+    def _perform_advanced_search(self, shape_type, tag, has_desc, has_difficult, has_attrs, result_widget):
+        """고급 검색 수행"""
+        try:
+            results = []
+            
+            # 조건에 따라 검색
+            if shape_type and shape_type != "-- 모든 타입 --":
+                results = self.annotation_manager.find_by_shape_type(shape_type)
+            
+            if tag and tag != "-- 모든 태그 --":
+                if results:
+                    results = [r for r in results if tag in r.get('tags', [])]
+                else:
+                    results = self.annotation_manager.find_by_tag(tag)
+            
+            if has_desc:
+                if results:
+                    results = [r for r in results if r.get('has_descriptions')]
+                else:
+                    results = self.annotation_manager.find_with_descriptions()
+            
+            if has_difficult:
+                if results:
+                    results = [r for r in results if r.get('has_difficult')]
+                else:
+                    results = self.annotation_manager.find_difficult_annotations()
+            
+            if has_attrs:
+                if results:
+                    results = [r for r in results if r.get('has_attributes')]
+                else:
+                    results = self.annotation_manager.find_with_attributes()
+            
+            # 결과 표시
+            if not any([shape_type and shape_type != "-- 모든 타입 --", 
+                       tag and tag != "-- 모든 태그 --",
+                       has_desc, has_difficult, has_attrs]):
+                result_widget.setPlainText("검색 조건을 선택해주세요.")
+                return
+            
+            result_lines = []
+            result_lines.append(f"=== 검색 결과: {len(results)}개 ===\n")
+            
+            if results:
+                # 라벨별 통계
+                label_counts = {}
+                for r in results:
+                    for label in r.get('labels', []):
+                        label_counts[label] = label_counts.get(label, 0) + 1
+                
+                result_lines.append("라벨별 분포:")
+                for label, count in sorted(label_counts.items(), key=lambda x: x[1], reverse=True):
+                    result_lines.append(f"  {label}: {count}개")
+                
+                result_lines.append(f"\n처음 10개 결과:")
+                for i, r in enumerate(results[:10]):
+                    result_lines.append(f"{i+1}. {r.get('imagePath', 'N/A')}")
+                    result_lines.append(f"   라벨: {', '.join(r.get('labels', []))}")
+                    if r.get('description'):
+                        result_lines.append(f"   설명: {r.get('description')[:50]}...")
+                
+                if len(results) > 10:
+                    result_lines.append(f"\n... 및 {len(results) - 10}개 더")
+            else:
+                result_lines.append("조건에 맞는 어노테이션을 찾을 수 없습니다.")
+            
+            result_widget.setPlainText("\n".join(result_lines))
+            
+        except Exception as e:
+            result_widget.setPlainText(f"검색 중 오류가 발생했습니다:\n{str(e)}")
+
+    def show_label_detail(self):
+        """선택된 라벨의 상세 정보 표시"""
+        if not self.annotation_manager:
+            QMessageBox.information(self, "정보", "AnnotationManager가 연결되지 않았습니다.")
+            return
+        
+        selected_label = self.label_combo.currentText()
+        if not selected_label or selected_label == "모든 라벨":
+            QMessageBox.information(self, "안내", "특정 라벨을 선택해주세요.")
+            return
+        
+        try:
+            # AnnotationManager를 통해 라벨별 데이터 조회
+            label_annotations = self.annotation_manager.find_by_label(selected_label)
+            
+            detail_text = []
+            detail_text.append(f"=== 라벨 '{selected_label}' 상세 정보 ===\n")
+            detail_text.append(f"총 어노테이션 수: {len(label_annotations)}개")
+            
+            # 이미지별 통계
+            image_counts = {}
+            shape_types = set()
+            has_descriptions = 0
+            has_difficult = 0
+            
+            for ann in label_annotations:
+                image_path = ann.get('imagePath', '')
+                if image_path:
+                    image_counts[image_path] = image_counts.get(image_path, 0) + 1
+                
+                # Shape 타입 수집
+                shape_types.update(ann.get('shape_types', []))
+                
+                # 플래그 정보
+                if ann.get('has_descriptions'):
+                    has_descriptions += 1
+                if ann.get('has_difficult'):
+                    has_difficult += 1
+            
+            detail_text.append(f"관련 이미지 수: {len(image_counts)}개")
+            detail_text.append(f"평균 객체/이미지: {len(label_annotations)/max(1, len(image_counts)):.1f}개")
+            detail_text.append(f"설명 있는 어노테이션: {has_descriptions}개")
+            detail_text.append(f"Difficult 표시: {has_difficult}개")
+            
+            if shape_types:
+                detail_text.append(f"\nShape 타입: {', '.join(shape_types)}")
+            
+            # 가장 많이 나타나는 이미지들 (Top 10)
+            if image_counts:
+                detail_text.append(f"\n=== 가장 많이 나타나는 이미지 (Top 10) ===")
+                sorted_images = sorted(image_counts.items(), key=lambda x: x[1], reverse=True)
+                for img, count in sorted_images[:10]:
+                    detail_text.append(f"{img}: {count}개")
+            
+            # 현재 화면에서의 해당 라벨 정보
+            current_count = sum(1 for item in self.filtered_data 
+                              for shape in item.get('shapes', []) 
+                              if shape.get('label') == selected_label)
+            detail_text.append(f"\n현재 화면에 표시된 '{selected_label}': {current_count}개")
+            
+            # 다이얼로그 표시
+            detail_dialog = QMessageBox()
+            detail_dialog.setWindowTitle(f"라벨 '{selected_label}' 상세 정보")
+            detail_dialog.setIcon(QMessageBox.Information)
+            detail_dialog.setText("\n".join(detail_text))
+            detail_dialog.exec_()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"라벨 상세 정보 조회 중 오류:\n{str(e)}")
+
+    def show_annotation_statistics(self):
+        """AnnotationManager를 활용한 확장 통계 정보 표시"""
+        if not self.annotation_manager:
+            # AnnotationManager가 없으면 기존 통계 사용
+            self.show_statistics()
+            return
+        
+        try:
+            # AnnotationManager에서 통계 가져오기
+            ann_stats = self.annotation_manager.get_annotation_statistics()  # 올바른 메서드명 사용
+            all_labels = self.annotation_manager.get_all_labels()
+            all_tags = self.annotation_manager.get_all_tags()
+            all_shape_types = self.annotation_manager.get_all_shape_types()
+            label_distribution = self.annotation_manager.get_label_distribution()
+            
+            # 현재 화면 데이터 통계
+            current_stats = self.calculate_statistics()
+            
+            # 통계 다이얼로그 생성
+            stats_dialog = QMessageBox()
+            stats_dialog.setWindowTitle("어노테이션 통계 (MongoDB 연동)")
+            stats_dialog.setIcon(QMessageBox.Information)
+            
+            stats_text = []
+            
+            # MongoDB 전체 통계
+            stats_text.append("=== MongoDB 전체 통계 ===")
+            stats_text.append(f"전체 파일: {ann_stats.get('total_files', 0):,}개")
+            stats_text.append(f"전체 Shape: {ann_stats.get('total_shapes', 0):,}개")
+            stats_text.append(f"고유 라벨: {ann_stats.get('unique_labels', 0):,}개")
+            stats_text.append(f"평균 Shape/파일: {ann_stats.get('avg_shapes_per_file', 0):.1f}개")
+            stats_text.append(f"설명 있는 파일: {ann_stats.get('files_with_descriptions', 0):,}개")
+            stats_text.append(f"태그 있는 파일: {ann_stats.get('files_with_tags', 0):,}개")
+            stats_text.append(f"최근 7일 파일: {ann_stats.get('recent_files', 0):,}개")
+            
+            # 현재 화면 통계 (비교용)
+            stats_text.append(f"\n=== 현재 검수 화면 통계 ===")
+            stats_text.append(f"표시된 어노테이션: {current_stats['total_annotations']:,}개")
+            stats_text.append(f"표시된 이미지: {len(set(item['imagePath'] for item in self.filtered_data)):,}개")
+            stats_text.append(f"표시된 객체: {current_stats['total_objects']:,}개")
+            stats_text.append(f"평균 객체 수: {current_stats['avg_objects_per_image']:.1f}개/이미지")
+            
+            # 라벨 분포 (MongoDB 전체)
+            stats_text.append(f"\n=== 라벨 분포 (상위 15개) ===")
+            sorted_labels = sorted(label_distribution.items(), key=lambda x: x[1], reverse=True)
+            for i, (label, count) in enumerate(sorted_labels[:15]):
+                # 현재 화면에서의 해당 라벨 개수
+                current_count = current_stats['labels'].get(label, 0)
+                stats_text.append(f"{label}: {count}개 (전체) / {current_count}개 (화면)")
+            if len(label_distribution) > 15:
+                stats_text.append(f"... 및 {len(label_distribution) - 15}개 더")
+            
+            # Shape 타입 통계
+            if all_shape_types:
+                stats_text.append(f"\n=== Shape 타입 (총 {len(all_shape_types)}개) ===")
+                for shape_type in all_shape_types:
+                    stats_text.append(f"- {shape_type}")
+            
+            # 태그 통계
+            if all_tags:
+                stats_text.append(f"\n=== 태그 (총 {len(all_tags)}개) ===")
+                for i, tag in enumerate(all_tags[:10]):  # 최대 10개만 표시
+                    stats_text.append(f"- {tag}")
+                if len(all_tags) > 10:
+                    stats_text.append(f"... 및 {len(all_tags) - 10}개 더")
+            
+            # 검수 상태별 통계 (현재 화면)
+            stats_text.append(f"\n=== 검수 상태별 (현재 화면) ===")
+            for status, count in current_stats['review_status'].items():
+                stats_text.append(f"{status}: {count}개")
+            
+            # 검색 기능 안내
+            stats_text.append(f"\n=== 고급 검색 기능 ===")
+            stats_text.append("• 라벨별 검색 가능")
+            stats_text.append("• Shape 타입별 검색 가능")
+            stats_text.append("• 태그별 검색 가능")
+            stats_text.append("• 설명/Attributes/플래그 여부로 필터링 가능")
+            stats_text.append("\n※ MongoDB에서 실시간으로 데이터를 가져옵니다.")
+            
+            stats_dialog.setText("\n".join(stats_text))
+            stats_dialog.exec_()
+            
+        except Exception as e:
+            print(f"어노테이션 통계 조회 실패: {e}")
+            # 폴백: 기존 통계 표시
+            self.show_statistics()
     
     def show_statistics(self):
         """통계 정보 표시"""
@@ -958,29 +1404,52 @@ class LabelMeReviewSearch(QMainWindow):
             if reply != QMessageBox.Yes:
                 return
             try:
-                if self.mongo:
-                    self.mongo.delete_multiple_annotations({"image_id": target.get('_id')})
-            except Exception:
-                pass
+                # AnnotationManager를 통해 삭제
+                if self.annotation_manager and target.get('imagePath'):
+                    self.annotation_manager.delete_annotation(target.get('imagePath'))
+            except Exception as e:
+                print(f"MongoDB 삭제 실패: {e}")
             self.sample_data = [x for x in self.sample_data if x.get('_id') != target.get('_id')]
             self.filter_data()
             QMessageBox.information(self, "삭제 완료", "어노테이션이 삭제되었습니다.")
             return
 
+        # '반려' 요청 처리 (이전 단계로 되돌림)
+        if action_type == "reject_flow":
+            cur = target.get('review_status', '1차 검수 요청 전')
+            prev_map = {
+                '1차 검수 요청 전': '1차 검수 요청 전',  # 더 이전 단계 없음
+                '1차 검수 요청': '1차 검수 요청 전',
+                '1차 검수 완료': '1차 검수 요청',
+                '2차 검수 요청': '1차 검수 완료',
+                '2차 검수 완료': '2차 검수 요청',
+            }
+            new_status = prev_map.get(cur, '1차 검수 요청 전')
+        
         if new_status:
             try:
-                if self.mongo:
-                    self.mongo.annotations.update_many(
-                        {"image_id": target.get('_id')},
-                        {"$set": {"review_status": new_status, "updated_at": now}}
+                # AnnotationManager를 통해 MongoDB 업데이트
+                if self.annotation_manager and target.get('imagePath'):
+                    # 어노테이션 데이터에 검수 상태 추가
+                    updated_annotation = target.copy()
+                    updated_annotation['review_status'] = new_status
+                    updated_annotation['updated_at'] = now
+                    
+                    # MongoDB 업데이트
+                    self.annotation_manager.update_annotation(
+                        target.get('imagePath'), 
+                        updated_annotation
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"MongoDB 상태 업데이트 실패: {e}")
+            
+            # 로컬 데이터 업데이트
             target['review_status'] = new_status
             target['updated_at'] = now
             if new_status == "최종 승인":
                 self.sample_data = [x for x in self.sample_data if x.get('_id') != target.get('_id')]
             self.filter_data()
+            
             feedback = {
                 "1차 검수 요청": (QMessageBox.Information, "검수 요청", "1차 검수가 요청되었습니다."),
                 "1차 검수 완료": (QMessageBox.Information, "검수 완료", "1차 검수가 완료되었습니다."),
@@ -994,32 +1463,214 @@ class LabelMeReviewSearch(QMainWindow):
                 QMessageBox(icon, title, text, parent=self).exec_()
     
     def open_image_and_label(self, annotation_data):
-        """MongoDB 경로를 이용해 라벨링 툴 실행"""
+        """🚀 최적화된 이미지 경로 조회 및 라벨링 툴 실행"""
         import os
         import subprocess
         try:
-            # DB에서 저장한 실제 경로 우선
-            file_path = annotation_data.get('file_path') or ""
-            if not file_path and self.mongo:
-                filename = annotation_data.get('imagePath')
-                img_doc = self.mongo.images.find_one({"filename": filename})
-                if img_doc:
-                    file_path = img_doc.get('file_path') or img_doc.get('path')
-            if not file_path:
-                QMessageBox.warning(self, "경로 없음", "이미지 경로를 찾을 수 없습니다.")
+            print(f"\n🔍 DB 검수 파일 열기 - 디버깅 정보:")
+            print(f"  annotation_data keys: {list(annotation_data.keys())}")
+            print(f"  imagePath: {annotation_data.get('imagePath')}")
+            print(f"  image_file_path: {annotation_data.get('image_file_path')}")
+            print(f"  image_exists: {annotation_data.get('image_exists')}")
+            print(f"  json_file_path: {annotation_data.get('json_file_path')}")
+            
+            # 🚀 Ultra Fast 파일 경로 찾기 (강화된 버전)
+            
+            # 1️⃣ 캐시된 데이터에서 먼저 확인 (가장 빠름)
+            file_path = annotation_data.get('image_file_path', '')
+            image_exists = annotation_data.get('image_exists', None)
+            
+            if file_path and image_exists is True:
+                print(f"✅ 캐시된 경로 사용: {file_path}")
+                if os.path.exists(file_path):
+                    self._launch_labeling_tool(file_path)
+                    return
+                else:
+                    print(f"⚠️ 캐시된 정보와 다름 - 파일이 실제로 없음: {file_path}")
+            
+            # 2️⃣ imagePath 직접 확인 (빠름)
+            image_path = annotation_data.get('imagePath')
+            if image_path and os.path.exists(image_path):
+                print(f"✅ imagePath 직접 사용: {image_path}")
+                self._launch_labeling_tool(image_path)
                 return
+            
+            # 3️⃣ 다양한 경로 패턴 시도 (강화된 검색)
+            possible_paths = []
+            
+            # JSON 파일에서 이미지 경로 추정
+            json_path = annotation_data.get('json_file_path', '')
+            if json_path:
+                # JSON과 같은 디렉토리에서 이미지 찾기
+                json_dir = os.path.dirname(json_path)
+                json_name = os.path.splitext(os.path.basename(json_path))[0]
+                
+                # 일반적인 이미지 확장자들
+                image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.gif']
+                for ext in image_extensions:
+                    possible_paths.append(os.path.join(json_dir, json_name + ext))
+            
+            # imagePath가 있지만 파일이 없는 경우, 다른 확장자 시도
+            if image_path:
+                base_path = os.path.splitext(image_path)[0]
+                image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.gif']
+                for ext in image_extensions:
+                    possible_paths.append(base_path + ext)
+            
+            # 가능한 경로들 확인
+            for path in possible_paths:
+                if path and os.path.exists(path):
+                    print(f"✅ 추정 경로에서 발견: {path}")
+                    self._launch_labeling_tool(path)
+                    return
+            
+            print(f"🔍 모든 경로 시도 실패, 가능한 경로들:")
+            for i, path in enumerate(possible_paths[:10]):  # 처음 10개만 표시
+                print(f"  {i+1}. {path} {'✅' if os.path.exists(path) else '❌'}")
+            
+            # 4️⃣ MongoDB에서 빠른 조회 (인덱스 활용)
+            if self.annotation_manager:
+                image_path_key = annotation_data.get('imagePath') or annotation_data.get('json_file_name', '')
+                if image_path_key:
+                    print(f"🔍 MongoDB에서 경로 조회 중: {image_path_key}")
+                    
+                    # 빠른 경로 조회 (인덱스 활용)
+                    path_info = self.annotation_manager.get_image_path_fast(
+                        image_path_key, 
+                        "imagePath" if annotation_data.get('imagePath') else "json_file_name"
+                    )
+                    
+                    if path_info:
+                        file_path = path_info.get('image_file_path', '')
+                        if file_path and path_info.get('image_exists', False):
+                            print(f"✅ DB에서 경로 발견: {file_path}")
+                            if os.path.exists(file_path):
+                                self._launch_labeling_tool(file_path)
+                                return
+                            else:
+                                print(f"⚠️ DB 정보와 다름 - 파일이 실제로 없음: {file_path}")
+            
+            # 5️⃣ 폴백: 경로 추정 및 파일 시스템 검색 (느림)
+            print("⚠️ 폴백 모드: 파일 시스템 검색")
+            
+            # JSON 파일 경로에서 이미지 파일 경로 추정
+            json_path = annotation_data.get('json_file_path', '')
+            if json_path and os.path.exists(json_path):
+                json_dir = os.path.dirname(json_path)
+                image_name = os.path.basename(annotation_data.get('imagePath', ''))
+                if image_name:
+                    possible_path = os.path.join(json_dir, image_name)
+                    if os.path.exists(possible_path):
+                        print(f"✅ 추정 경로에서 발견: {possible_path}")
+                        self._launch_labeling_tool(possible_path)
+                        return
+            
+            # 🚨 모든 방법 실패 - 사용자 친화적 에러 메시지
+            print(f"❌ 모든 경로 검색 실패")
+            
+            error_msg = (
+                f"🔍 DB 검수 파일을 찾을 수 없습니다.\n\n"
+                f"� 검색된 정보:\n"
+                f"• imagePath: {annotation_data.get('imagePath', 'N/A')}\n"
+                f"• image_file_path: {annotation_data.get('image_file_path', 'N/A')}\n"
+                f"• json_file_path: {annotation_data.get('json_file_path', 'N/A')}\n"
+                f"• image_exists 캐시: {annotation_data.get('image_exists', 'N/A')}\n\n"
+                f"� 해결 방법:\n"
+                f"1. 이미지 파일이 실제로 존재하는지 확인\n"
+                f"2. JSON 파일과 이미지 파일이 같은 폴더에 있는지 확인\n"
+                f"3. 파일 경로에 특수문자나 한글이 포함되어 있지 않은지 확인\n"
+                f"4. 파일 권한 문제가 없는지 확인\n\n"
+                f"💡 Ultra Fast 시스템이 파일을 찾기 위해 모든 가능한 경로를 검색했지만,\n"
+                f"   해당 파일을 발견할 수 없었습니다."
+            )
+            
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "DB 검수 파일 찾기 실패", error_msg)
+                
+        except Exception as e:
+            print(f"❌ open_image_and_label 에러: {str(e)}")
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "DB 검수 파일 열기 오류", f"DB 검수 파일 열기 중 오류가 발생했습니다:\n{str(e)}")
+    
+    def _launch_labeling_tool(self, file_path):
+        """🚀 Ultra Fast 라벨링 툴 실행 (최적화된 버전)"""
+        import os
+        import time
+        import sys
+        import subprocess
+        
+        try:
             if not os.path.exists(file_path):
-                QMessageBox.warning(self, "파일 없음", f"파일을 찾을 수 없습니다:\n{file_path}")
-                return
-            # anylabeling/app.py 실행
-            repo_root = os.path.dirname(os.path.abspath(__file__))
+                raise FileNotFoundError(f"파일이 존재하지 않습니다: {file_path}")
+            
+            start_time = time.time()
+            print(f"\n🚀 Ultra Fast DB 검수 파일 열기: {file_path}")
+            
+            # 1. 🔥 Ultra Fast 인스턴스 관리자 우선 시도 (가장 빠름)
+            try:
+                # anylabeling 패키지 경로 추가
+                repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                if repo_root not in sys.path:
+                    sys.path.insert(0, repo_root)
+                
+                from anylabeling.services.app_instance_manager import open_file_with_instance_manager
+                
+                success = open_file_with_instance_manager(file_path)
+                if success:
+                    elapsed = time.time() - start_time
+                    print(f"✅ Ultra Fast 인스턴스 실행 완료 ({elapsed:.2f}초)")
+                    
+                    QMessageBox.information(
+                        self, 
+                        "🚀 Ultra Fast DB 검수", 
+                        f"Ultra Fast 모드로 DB 검수 파일이 즉시 열렸습니다! ⚡\n\n"
+                        f"📁 파일: {os.path.basename(file_path)}\n"
+                        f"📍 경로: {file_path}\n"
+                        f"⏱️ 실행 시간: {elapsed:.2f}초\n\n"
+                        f"💡 기존 인스턴스 재사용으로 초고속 실행!"
+                    )
+                    return
+                    
+            except Exception as e:
+                print(f"⚠️ Ultra Fast 인스턴스 실행 실패, 기본 방식 사용: {e}")
+            
+            # 2. 폴백: 기본 방식 (하지만 Ultra Fast 최적화 적용)
+            print("📌 기본 방식으로 실행 (Ultra Fast 최적화 적용)")
+            
+            # anylabeling 앱 실행 (Ultra Fast 모드)
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             app_path = os.path.join(repo_root, 'anylabeling', 'app.py')
+            
             if os.path.exists(app_path):
+                # Ultra Fast 플래그는 없지만 이미 최적화되어 있음
                 subprocess.Popen([sys.executable, app_path, file_path])
             else:
+                # 대안: anylabeling 모듈로 실행
                 subprocess.Popen([sys.executable, '-m', 'anylabeling.app', file_path])
+            
+            elapsed = time.time() - start_time
+            print(f"✅ 기본 방식 실행 완료 ({elapsed:.2f}초)")
+            
+            QMessageBox.information(
+                self, 
+                "DB 검수 파일 열기", 
+                f"Ultra Fast 최적화가 적용된 라벨링 툴이 실행되었습니다.\n\n"
+                f"📁 파일: {os.path.basename(file_path)}\n"
+                f"📍 경로: {file_path}\n"
+                f"⏱️ 실행 시간: {elapsed:.2f}초\n\n"
+                f"� Ultra Fast 최적화로 빠르게 시작됩니다!"
+            )
+                
         except Exception as e:
-            QMessageBox.critical(self, "오류", f"라벨링 툴 실행 중 오류: {str(e)}")
+            print(f"❌ DB 검수 파일 열기 실패: {e}")
+            QMessageBox.critical(
+                self, 
+                "DB 검수 파일 열기 실패", 
+                f"DB 검수 파일을 열 수 없습니다:\n{str(e)}\n\n"
+                f"파일: {file_path}\n\n"
+                f"💡 파일 경로와 권한을 확인해주세요."
+            )
+            raise Exception(f"라벨링 툴 실행 실패: {str(e)}")
     
     def edit_annotation(self, annotation_data):
         """어노테이션 편집 다이얼로그"""

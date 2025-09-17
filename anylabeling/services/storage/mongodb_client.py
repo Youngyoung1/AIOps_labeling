@@ -50,8 +50,10 @@ def confirm_dangerous_operation(operation_type, target="", count=0):
         
         # 아이콘 설정 시도
         try:
-            msg_box.setWindowIcon(QIcon(":/icons/warning.png"))
-        except:
+            # QRC prefix is "/images", and files live under images/* inside it.
+            # So the full resource path is ":/images/images/<file>".
+            msg_box.setWindowIcon(QIcon(":/images/images/warning.svg"))
+        except Exception:
             pass
         
         # 다이얼로그 실행
@@ -145,6 +147,21 @@ class MongoStorage:
             self.annotations.create_index([("image_id", ASCENDING)])
             self.flags.create_index([("annotation_id", ASCENDING)])
             self.images.create_index([("image_id", ASCENDING)], unique=True)
+            # 파일 경로/이름 기반 조회를 위한 인덱스 추가 (DB에 필드가 존재할 경우 활용됨)
+            try:
+                self.images.create_index([("file_path", ASCENDING)], name="file_path_1")
+            except Exception:
+                pass
+            try:
+                self.images.create_index([("filename", ASCENDING)], name="filename_1")
+            except Exception:
+                pass
+            # 사용자 환경에서 사용될 수 있는 다양한 필드명에 대한 인덱스도 시도
+            for field, idx_name in [("imagePath", "imagePath_1"), ("image_file_path", "image_file_path_1"), ("path", "path_1")]:
+                try:
+                    self.images.create_index([(field, ASCENDING)], name=idx_name)
+                except Exception:
+                    pass
             # 벡터 검색을 위한 텍스트 인덱스 추가
             self.annotations.create_index([("label", "text"), ("description", "text")])
         except Exception:

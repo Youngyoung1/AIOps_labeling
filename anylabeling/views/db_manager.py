@@ -2,10 +2,17 @@
 
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
+import PyQt5.QtCore as QtCore
 from PyQt5.QtGui import *
 from datetime import datetime, timedelta
+import os
+import threading
+import time
 import json
 from bson import ObjectId
+from anylabeling.services.app_instance_manager import (
+    open_file_with_instance_manager,
+)
 
 class DBManagerDialog(QDialog):
     """MongoDB 관리 메인 다이얼로그"""
@@ -122,6 +129,11 @@ class DBManagerDialog(QDialog):
         batch_btn = QPushButton("배치 작업")
         batch_btn.clicked.connect(self.show_batch_operations)
         filter_layout.addWidget(batch_btn)
+
+        # 모두 보기 버튼: 캐시된 모든 이미지 파일을 인스턴스 매니저로 빠르게 연다
+        open_all_btn = QPushButton("모두 보기")
+        open_all_btn.clicked.connect(self.confirm_and_open_all_images)
+        filter_layout.addWidget(open_all_btn)
         
         layout.addLayout(filter_layout)
         
@@ -312,6 +324,8 @@ class DBManagerDialog(QDialog):
             # 모든 이미지 조회 (제한적으로)
             images_cursor = self.mongo_storage.images.find().limit(100)
             images = list(images_cursor)
+            # 현재 로드된 이미지 문서 캐시 (빠른 열기용)
+            self.image_docs = images
             
             self.image_table.setRowCount(len(images))
             
@@ -325,14 +339,174 @@ class DBManagerDialog(QDialog):
                 ann_count = self.mongo_storage.annotations.count_documents({'image_id': image.get('image_id', '')})
                 self.image_table.setItem(i, 4, QTableWidgetItem(str(ann_count)))
                 
-                # 작업 버튼
+                # 작업 버튼: 보기 → 빠른 뷰어 실행 (인스턴스/신규 프로세스)
                 action_btn = QPushButton("보기")
+                # image_id 또는 file_path를 안전하게 캡처
+                image_id = image.get('image_id') or image.get('_id')
+                action_btn.clicked.connect(
+                    lambda checked=False, iid=image_id: self.open_image_in_viewer(iid)
+                )
                 self.image_table.setCellWidget(i, 5, action_btn)
             
             self.image_table.resizeColumnsToContents()
             
         except Exception as e:
             print(f"이미지 로드 오류: {e}")
+
+    def open_image_in_viewer(self, image_identifier):
+        """선택한 이미지 문서를 조회해 빠른 뷰어(인스턴스/신규 프로세스)로 연다."""
+        try:
+            # image_identifier는 보통 image_id (str). 없으면 _id(ObjectId)일 수 있음.
+            image_doc = None
+            if isinstance(image_identifier, ObjectId):
+                image_doc = self.mongo_storage.images.find_one({'_id': image_identifier})
+            else:
+                # 우선 image_id로 조회, 실패 시 _id로도 시도
+                image_doc = self.mongo_storage.images.find_one({'image_id': image_identifier})
+                if not image_doc:
+                    try:
+                        maybe_oid = ObjectId(image_identifier)
+                        image_doc = self.mongo_storage.images.find_one({'_id': maybe_oid})
+                    except Exception:
+                        pass
+
+            if not image_doc:
+                QMessageBox.warning(self, "오류", "이미지 문서를 찾을 수 없습니다.")
+                return
+
+            # 파일 경로 결정: file_path 우선, 없으면 filename 사용 (절대경로 기대)
+            file_path = image_doc.get('file_path') or image_doc.get('filename')
+            if not file_path:
+                QMessageBox.warning(self, "오류", "이미지 파일 경로가 없습니다.")
+                return
+
+            # 인스턴스 매니저 경유: 기존 인스턴스에 열기 시도 → 실패 시 초경량 새 프로세스
+            success = open_file_with_instance_manager(str(file_path))
+            # UI 업데이트: 상단 인덱스 텍스트 및 하단 경로 메시지
+            try:
+                main_win = self.window()
+            except Exception:
+                main_win = None
+
+            def _update_ui_for_single(path):
+                if main_win is None:
+                    return
+                try:
+                    # 상단에 [1/1] filename 형태로 표시
+                    if hasattr(main_win, 'set_top_file_index_text'):
+                        # 현재 인덱스와 전체 개수 계산
+                        total = len(self.image_docs) if hasattr(self, 'image_docs') else 1
+                        # path에 해당하는 인덱스 찾기 (1-based)
+                        current = 1
+                        if hasattr(self, 'image_docs'):
+                            for idx, img in enumerate(self.image_docs):
+                                img_path = img.get('file_path') or img.get('filename')
+                                if img_path == str(path):
+                                    current = idx + 1
+                                    break
+                        main_win.set_top_file_index_text(f"[{current}/{total}] {os.path.basename(path)}")
+                    # 하단 상태바에 전체 경로 표시
+                    try:
+                        if main_win.statusBar():
+                            main_win.statusBar().showMessage(str(path), 5000)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            if success:
+                # 큐에 UI 업데이트 작업을 넣음 (메인 스레드에서 실행)
+                try:
+                    QtCore.QTimer.singleShot(0, lambda p=file_path: _update_ui_for_single(p))
+                except Exception:
+                    _update_ui_for_single(file_path)
+            else:
+                QMessageBox.information(self, "알림", "뷰어 실행에 실패했습니다. 경로를 확인해주세요.")
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"뷰어 실행 중 오류: {e}")
+
+    def confirm_and_open_all_images(self):
+        """사용자 확인 후 캐시된 모든 이미지 파일을 인스턴스로 빠르게 연다."""
+        if not hasattr(self, 'image_docs') or not self.image_docs:
+            QMessageBox.information(self, "알림", "열 이미지 목록이 없습니다. 먼저 새로고침 해주세요.")
+            return
+
+        count = len(self.image_docs)
+        reply = QMessageBox.question(
+            self,
+            "모두 보기 확인",
+            f"현재 로드된 {count}개의 이미지를 모두 엽니다. 계속하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # 진행 다이얼로그
+        progress = QProgressDialog("이미지 열기 중...", "취소", 0, count, self)
+        progress.setWindowTitle("모두 보기")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(200)
+
+        def _open_all():
+            opened = 0
+            for i, img in enumerate(list(self.image_docs)):
+                if progress.wasCanceled():
+                    break
+                file_path = img.get('file_path') or img.get('filename')
+                if not file_path:
+                    progress.setValue(i + 1)
+                    continue
+                # 절대경로로 변환 시도
+                try:
+                    file_path = os.path.expanduser(str(file_path))
+                except Exception:
+                    pass
+
+                # 존재 여부 확인
+                if not os.path.exists(file_path):
+                    progress.setValue(i + 1)
+                    continue
+
+                try:
+                    success = open_file_with_instance_manager(str(file_path))
+                    if success:
+                        opened += 1
+                        # 메인 윈도우 UI 업데이트 (index 및 상태바)
+                        try:
+                            main_win = self.window()
+                        except Exception:
+                            main_win = None
+
+                        def _update(i_local, total_local, p_local):
+                            if main_win is None:
+                                return
+                            try:
+                                if hasattr(main_win, 'set_top_file_index_text'):
+                                    main_win.set_top_file_index_text(f"[{i_local}/{total_local}] {os.path.basename(p_local)}")
+                                try:
+                                    if main_win.statusBar():
+                                        main_win.statusBar().showMessage(str(p_local), 2000)
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+
+                        try:
+                            QtCore.QTimer.singleShot(0, lambda ii=i+1, tot=len(self.image_docs), p=file_path: _update(ii, tot, p))
+                        except Exception:
+                            _update(i+1, len(self.image_docs), file_path)
+                except Exception:
+                    pass
+
+                progress.setValue(i + 1)
+                # 작은 딜레이를 두어 시스템 부하 완화
+                time.sleep(0.05)
+
+            progress.close()
+            QMessageBox.information(self, "완료", f"열기 시도 완료: {opened}개 열림(성공)")
+
+        thread = threading.Thread(target=_open_all, daemon=True)
+        thread.start()
     
     def load_annotations(self):
         """어노테이션 데이터 로드"""

@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
     QWidget,
     QMessageBox,
     QScrollArea,
+    QPushButton,
 )
 
 from anylabeling.services.auto_labeling.types import AutoLabelingMode
@@ -69,6 +70,178 @@ LABEL_OPACITY = 128
 
 
 class LabelingWidget(LabelDialog):
+    def show_multi_image_grid(self, file_list):
+        """
+        file_list의 이미지를 한 화면에 썸네일 그리드(최대 8개)로 표시. 썸네일 클릭 시 해당 이미지를 단일 라벨링 뷰로 전환.
+        """
+        # 기존 import를 활용하여 중복 import 방지
+        # 기존 중앙 위젯 숨기기
+        if hasattr(self, 'canvas'):
+            self.canvas.hide()
+        if hasattr(self, 'multi_grid_widget') and self.multi_grid_widget:
+            self.multi_grid_widget.setParent(None)
+            self.multi_grid_widget = None
+        grid_widget = QWidget(self)
+        grid_layout = QtWidgets.QGridLayout()
+        grid_widget.setLayout(grid_layout)
+        grid_widget.setObjectName('multi_grid_widget')
+        self.multi_grid_widget = grid_widget
+        max_cols = 4
+        max_imgs = min(8, len(file_list))
+        for i in range(max_imgs):
+            img_path = file_list[i]
+            thumb = QtWidgets.QLabel()
+            thumb.setFrameShape(QtWidgets.QFrame.Box)
+            thumb.setLineWidth(1)
+            thumb.setFixedSize(180, 180)
+            if os.path.exists(img_path):
+                pix = QtGui.QPixmap(img_path)
+                if not pix.isNull():
+                    thumb.setPixmap(pix.scaled(170, 170, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                else:
+                    thumb.setText('이미지 오류')
+            else:
+                thumb.setText('파일 없음')
+            thumb.setToolTip(os.path.basename(img_path))
+            thumb.mousePressEvent = self._make_grid_thumb_click_handler(img_path, i)
+            grid_layout.addWidget(thumb, i // max_cols, i % max_cols)
+        # 중앙에 배치
+        if hasattr(self, 'main_layout'):
+            self.main_layout.addWidget(grid_widget)
+        else:
+            # fallback: 기존 layout에 추가
+            self.layout().addWidget(grid_widget)
+        grid_widget.show()
+
+    def _make_grid_thumb_click_handler(self, img_path, index):
+        """
+        그리드 썸네일 클릭 핸들러를 생성합니다.
+        클릭 시 해당 이미지를 단일 라벨링 뷰로 로드하고 file_list_widget을 동기화합니다.
+        """
+        def click_handler(event):
+            try:
+                # 현재 이미지 리스트에서 해당 파일의 인덱스 찾기
+                if hasattr(self, 'image_list') and img_path in self.image_list:
+                    file_index = self.image_list.index(img_path)
+                    # file_list_widget에서 해당 항목 선택
+                    if self.file_list_widget.count() > file_index:
+                        self.file_list_widget.setCurrentRow(file_index)
+                        self.file_list_widget.repaint()
+                
+                # 해당 이미지로 단일 라벨링 뷰 전환
+                self.set_file_list(self.image_list if hasattr(self, 'image_list') else [img_path], index)
+            except Exception as e:
+                self.error_message(self.tr("이미지 로드 오류"), f"{img_path}\n{e}")
+        return click_handler
+
+    def set_file_list(self, file_list, start_index=0):
+        """
+        외부에서 파일 리스트와 시작 인덱스를 받아 단일 라벨링 뷰에서 연속 편집이 가능하도록 준비한다.
+        - file_list_widget에 항목을 채우고, 내비게이션 액션을 활성화한다.
+        - start_index의 이미지를 즉시 로드한다.
+        """
+        # 유효성 체크
+        if not isinstance(file_list, list) or not file_list:
+            self.error_message(self.tr("파일 리스트 오류"), self.tr("파일 리스트가 비어 있거나 올바르지 않습니다."))
+            return
+        # 상태 초기화 및 리스트 설정 (self.image_list는 @property 이므로 직접 대입 금지)
+        images_in = file_list[:]
+        # 1차 전수 검사: 로드 가능한 이미지만 추려서 모두 편집 가능하도록 구성
+        valid_list = []
+        bad_list = []
+        for p in images_in:
+            try:
+                if not osp.exists(p):
+                    bad_list.append(p)
+                    continue
+                img = QtGui.QImage(p)
+                if img.isNull():
+                    bad_list.append(p)
+                else:
+                    valid_list.append(p)
+            except Exception:
+                bad_list.append(p)
+
+        if bad_list:
+            # 이후 네비게이션에서 자동 스킵을 위해 기록
+            self._bad_images.update(bad_list)
+
+        if not valid_list:
+            self.error_message(self.tr("이미지 로드 실패"), self.tr("모든 이미지 파일을 로드할 수 없습니다."))
+            return
+        # 이후 로직은 valid_list를 기준으로 UI와 동작을 구성
+        self.fn_to_index = {}
+        self.file_list_widget.clear()
+        self.filename = None
+
+        # 디렉토리 기준 정보 갱신
+        if len(self.image_list) > 0:
+            try:
+                self.last_open_dir = osp.dirname(self.image_list[0])
+            except Exception:
+                self.last_open_dir = None
+
+        # 기존 멀티 그리드 위젯 제거 및 캔버스 표시 복구
+        if hasattr(self, 'multi_grid_widget') and self.multi_grid_widget:
+            self.multi_grid_widget.setParent(None)
+            self.multi_grid_widget = None
+        if hasattr(self, 'canvas'):
+            self.canvas.show()
+
+        # 파일 리스트 UI 채우기 (+ 인덱스 맵 구성)
+        for f in valid_list:
+            item = QtWidgets.QListWidgetItem(str(f))
+            # 기본은 미검수 상태(언체크)로 두되, 추후 필요 시 라벨 파일 존재 여부로 체크 처리 가능
+            item.setCheckState(Qt.Unchecked)
+            self.file_list_widget.addItem(item)
+            self.fn_to_index[str(f)] = self.file_list_widget.count() - 1
+
+        # 내비게이션 액션 활성/비활성
+        try:
+            if len(valid_list) > 1:
+                self.actions.open_next_image.setEnabled(True)
+                self.actions.open_prev_image.setEnabled(True)
+                self.actions.open_next_unchecked_image.setEnabled(True)
+            else:
+                self.actions.open_next_image.setEnabled(False)
+                self.actions.open_prev_image.setEnabled(False)
+                self.actions.open_next_unchecked_image.setEnabled(False)
+        except Exception:
+            # actions 바인딩이 아직 준비되지 않은 경우 무시
+            pass
+
+        # 시작 인덱스 보정 및 선택/로드
+        try:
+            idx = int(start_index)
+        except Exception:
+            idx = 0
+        if idx < 0 or idx >= len(valid_list):
+            idx = 0
+
+        if self.file_list_widget.count() > 0:
+            self.file_list_widget.setCurrentRow(idx)
+            self.file_list_widget.repaint()
+
+        # 해당 이미지 즉시 로드(단일 라벨링 뷰에서 편집 시작)
+        try:
+            self.load_file(valid_list[idx])
+        except Exception as e:
+            # 로드 실패 시 사용자에게 알리고, 모든 이미지를 순차적으로 시도
+            self.error_message(self.tr("이미지 로드 오류"), f"{valid_list[idx]}\n{e}")
+            if len(valid_list) > 1:
+                loaded_successfully = False
+                for i in range(len(valid_list)):
+                    if i != idx:  # 이미 실패한 인덱스는 건너뛰기
+                        try:
+                            self.file_list_widget.setCurrentRow(i)
+                            self.load_file(valid_list[i])
+                            loaded_successfully = True
+                            break
+                        except Exception:
+                            continue
+                
+                if not loaded_successfully:
+                    self.error_message(self.tr("이미지 로드 실패"), self.tr("모든 이미지 파일을 로드할 수 없습니다."))
     """The main widget for labeling images"""
 
     FIT_WINDOW, FIT_WIDTH, MANUAL_ZOOM = 0, 1, 2
@@ -106,6 +279,7 @@ class LabelingWidget(LabelDialog):
         self.fn_to_index = {}
         self.cache_auto_label = None
         self.cache_auto_label_group_id = None
+        self._bad_images = set()
 
         # see configs/anylabeling_config.yaml for valid configuration
         if config is None:
@@ -149,6 +323,10 @@ class LabelingWidget(LabelDialog):
         self._no_selection_slot = False
         self._copied_shapes = None
         self._batch_edit_warning_shown = False
+        
+        # 실시간 DB 동기화 초기화
+        self._realtime_db_sync = None
+        self._initialize_realtime_sync()
 
         self.brightness_contrast_dialog = BrightnessContrastDialog(
             self.on_new_brightness_contrast, parent=self
@@ -179,6 +357,7 @@ class LabelingWidget(LabelDialog):
             self.flag_dock.hide()
         self.flag_dock.setWidget(self.flag_widget)
         self.flag_widget.itemChanged.connect(self.set_dirty)
+        self.flag_widget.itemChanged.connect(self._on_flags_changed)
         self.flag_dock.setStyleSheet(
             "QDockWidget::title {" "text-align: center;" "padding: 0px;" "}"
         )
@@ -263,7 +442,9 @@ class LabelingWidget(LabelDialog):
         self.canvas.new_shape.connect(self.new_shape)
         self.canvas.show_shape.connect(self.show_shape)
         self.canvas.shape_moved.connect(self.set_dirty)
+        self.canvas.shape_moved.connect(self._on_shape_changed)
         self.canvas.shape_rotated.connect(self.set_dirty)
+        self.canvas.shape_rotated.connect(self._on_shape_changed)
         self.canvas.selection_changed.connect(self.shape_selection_changed)
         self.canvas.drawing_polygon.connect(self.toggle_drawing_sensitive)
         # [Feature] support for automatically switching to editing mode
@@ -605,6 +786,18 @@ class LabelingWidget(LabelDialog):
             QtGui.QKeySequence("T"), self
         )
         self._quick_edit_shortcut.activated.connect(self.set_edit_mode)
+        # 보조 내비 단축키: A/D. 설정에 이미 지정되어 있지 않다면 추가 등록
+        try:
+            key_next = shortcuts.get("open_next", None)
+            key_prev = shortcuts.get("open_prev", None)
+        except Exception:
+            key_next = key_prev = None
+        if not key_prev:
+            self._nav_prev_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("A"), self)
+            self._nav_prev_shortcut.activated.connect(self.open_prev_image)
+        if not key_next:
+            self._nav_next_shortcut = QtWidgets.QShortcut(QtGui.QKeySequence("D"), self)
+            self._nav_next_shortcut.activated.connect(self.open_next_image)
         group_selected_shapes = action(
             self.tr("Group Selected Shapes"),
             self.group_selected_shapes,
@@ -786,6 +979,14 @@ class LabelingWidget(LabelDialog):
             shortcuts["open_vqa"],
             icon="vqa",
             tip=self.tr("Open VQA dialog"),
+        )
+        
+        search_annotations = action(
+            self.tr("Search Annotations"),
+            self.open_annotation_search,
+            shortcuts.get("search_annotations", "Ctrl+F"),
+            icon="search",
+            tip=self.tr("Search and manage annotations in MongoDB"),
         )
 
         documentation = action(
@@ -1872,6 +2073,17 @@ class LabelingWidget(LabelDialog):
             self.shape_text_label, 0, Qt.AlignCenter
         )
         right_sidebar_layout.addWidget(self.shape_text_edit)
+        # --- Review (검수) 패널: 1차 검수 요청 / 반려 ---
+        self.review_status_label = QLabel(self.tr("검수 상태: -"))
+        right_sidebar_layout.addWidget(self.review_status_label)
+        review_btn_row = QHBoxLayout()
+        self.btn_request_review = QPushButton(self.tr("1차 검수 요청"))
+        self.btn_reject_review = QPushButton(self.tr("반려"))
+        review_btn_row.addWidget(self.btn_request_review)
+        review_btn_row.addWidget(self.btn_reject_review)
+        right_sidebar_layout.addLayout(review_btn_row)
+        self.btn_request_review.clicked.connect(self.on_request_review_clicked)
+        self.btn_reject_review.clicked.connect(self.on_reject_review_clicked)
         right_sidebar_layout.addWidget(self.flag_dock)
         right_sidebar_layout.addWidget(self.label_dock)
 
@@ -2376,7 +2588,53 @@ class LabelingWidget(LabelDialog):
         dialog = ChatbotDialog(self)
         _ = dialog.exec_()
 
+    def open_annotation_search(self):
+        """어노테이션 검색 다이얼로그 열기"""
+        try:
+            annotation_manager = self._get_annotation_manager()
+            if not annotation_manager:
+                QtWidgets.QMessageBox.warning(
+                    self, 
+                    self.tr("MongoDB 연결 없음"), 
+                    self.tr("MongoDB 연결이 없어 검색 기능을 사용할 수 없습니다.")
+                )
+                return
+            
+            from .annotation_search_dialog import AnnotationSearchDialog
+            dialog = AnnotationSearchDialog(annotation_manager, self)
+            dialog.annotation_selected.connect(self.load_annotation_from_search)
+            dialog.exec_()
+            
+        except Exception as e:
+            logger.error(f"어노테이션 검색 다이얼로그 열기 실패: {e}")
+            QtWidgets.QMessageBox.critical(
+                self, 
+                self.tr("오류"), 
+                self.tr(f"검색 다이얼로그를 열 수 없습니다:\n{str(e)}")
+            )
+    
+    def load_annotation_from_search(self, image_path):
+        """검색 결과에서 선택된 어노테이션 로드"""
+        try:
+            if osp.exists(image_path):
+                self.load_file(image_path)
+                self.status(f"검색에서 로드됨: {osp.basename(image_path)}")
+            else:
+                QtWidgets.QMessageBox.warning(
+                    self, 
+                    self.tr("파일 없음"), 
+                    self.tr(f"이미지 파일을 찾을 수 없습니다:\n{image_path}")
+                )
+        except Exception as e:
+            logger.error(f"검색 결과 로드 실패: {e}")
+            QtWidgets.QMessageBox.critical(
+                self, 
+                self.tr("로드 오류"), 
+                self.tr(f"이미지 로드 중 오류가 발생했습니다:\n{str(e)}")
+            )
+
     def open_vqa(self):
+        """VQA 다이얼로그 열기"""
         if not self.image_list:
             self.error_message(
                 self.tr("No images loaded"),
@@ -3308,12 +3566,12 @@ class LabelingWidget(LabelDialog):
                 item = self.flag_widget.item(i)
                 flags[item.text()] = item.checkState() == Qt.Checked
 
-            # LabelFile 사용해 저장 (imageData 제외)
+            # LabelFile 사용해 저장 (imageData 제외) - 절대 경로로 저장
             lf = LabelFile()
             lf.save(
                 filename=json_path,
                 shapes=shapes_data,
-                image_path=osp.basename(self.image_path),
+                image_path=self.image_path,  # 전체 절대 경로로 저장
                 image_height=self.image.height() if self.image else None,
                 image_width=self.image.width() if self.image else None,
                 image_data=None,
@@ -3322,8 +3580,8 @@ class LabelingWidget(LabelDialog):
             )
             self.label_file = lf
             
-            # MongoDB 자동 저장 추가
-            self._save_to_mongodb(shapes_data, json_path)
+            # MongoDB 자동 저장 추가 - AnnotationManager 사용
+            self._save_to_mongodb_with_manager(shapes_data, json_path)
             
         except Exception as e:  # pragma: no cover
             logger.warning(f"조건부 JSON 저장 실패: {e}")
@@ -3332,15 +3590,286 @@ class LabelingWidget(LabelDialog):
 
         return True
 
+    def _save_to_mongodb_with_manager(self, shapes_data, json_path):
+        """AnnotationManager를 사용하여 MongoDB에 JSON 어노테이션 저장"""
+        try:
+            # AnnotationManager 인스턴스 가져오기
+            annotation_manager = self._get_annotation_manager()
+            if not annotation_manager:
+                return  # AnnotationManager가 없으면 건너뛰기
+            
+            # JSON 파일에서 데이터 읽기 및 AnnotationManager로 저장
+            if osp.exists(json_path):
+                # Prefer passing the json_file_path so AnnotationManager can
+                # compute and store path-related fields and perform upsert by
+                # json_file_path.
+                result = annotation_manager.insert_annotation(json_file_path=json_path)
+                if result:
+                    logger.info(f"AnnotationManager로 저장 완료: {self.image_path}")
+                else:
+                    logger.warning(f"AnnotationManager 저장 실패: {self.image_path}")
+            else:
+                logger.warning(f"JSON 파일이 존재하지 않음: {json_path}")
+                
+        except Exception as e:
+            logger.warning(f"AnnotationManager 저장 중 오류: {e}")
+            # Fallback: 기존 MongoDB 저장 방식 사용
+            self._save_to_mongodb(shapes_data, json_path)
+    
+    def _initialize_realtime_sync(self):
+        """실시간 DB 동기화 초기화"""
+        # 설정에서 비활성화된 경우 건너뛰기
+        if not self._config.get("enable_realtime_db_sync", True):
+            logger.info("실시간 DB 동기화가 설정에서 비활성화되어 있습니다")
+            return
+        
+        try:
+            # QApplication이 초기화된 후에만 실행
+            from PyQt5.QtWidgets import QApplication
+            if QApplication.instance() is None:
+                logger.debug("QApplication이 아직 초기화되지 않아 실시간 동기화를 지연합니다")
+                # 나중에 초기화하도록 타이머 설정
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(1000, self._delayed_realtime_sync_init)
+                return
+            
+            # realtime_db_sync 모듈 임포트
+            from anylabeling.services.realtime_db_sync import get_realtime_db_sync
+            
+            # AnnotationManager 가져오기 (시도만 하고 실패해도 계속 진행)
+            annotation_manager = None
+            try:
+                annotation_manager = self._get_annotation_manager()
+            except Exception as e:
+                logger.debug(f"AnnotationManager 가져오기 실패: {e}")
+            
+            if annotation_manager:
+                # 실시간 동기화 인스턴스 가져오기
+                self._realtime_db_sync = get_realtime_db_sync(annotation_manager)
+                
+                # 실시간 동기화 시작
+                self._realtime_db_sync.start()
+                logger.info("실시간 DB 동기화가 활성화되었습니다")
+            else:
+                logger.debug("AnnotationManager를 사용할 수 없어 실시간 동기화를 나중에 재시도합니다")
+                # 나중에 재시도
+                from PyQt5.QtCore import QTimer
+                QTimer.singleShot(1000, self._delayed_realtime_sync_init)
+                
+        except ImportError as e:
+            logger.warning(f"실시간 DB 동기화 모듈 임포트 실패: {e}")
+            self._realtime_db_sync = None
+        except Exception as e:
+            logger.warning(f"실시간 DB 동기화 초기화 실패: {e}")
+            self._realtime_db_sync = None
+    
+    def _delayed_realtime_sync_init(self):
+        """지연된 실시간 동기화 초기화"""
+        try:
+            if self._realtime_db_sync is not None:
+                return  # 이미 초기화됨
+            
+            from anylabeling.services.realtime_db_sync import get_realtime_db_sync
+            
+            annotation_manager = self._get_annotation_manager()
+            if annotation_manager:
+                self._realtime_db_sync = get_realtime_db_sync(annotation_manager)
+                self._realtime_db_sync.start()
+                logger.info("실시간 DB 동기화가 지연 초기화되었습니다")
+            else:
+                logger.debug("지연 초기화에서도 AnnotationManager를 사용할 수 없습니다")
+        except Exception as e:
+            logger.debug(f"지연된 실시간 동기화 초기화 실패: {e}")
+
+    def _on_shape_changed(self):
+        """도형 변경 시 실시간 저장 트리거"""
+        # If realtime DB sync is active, use it (non-blocking)
+        if self._realtime_db_sync and hasattr(self._realtime_db_sync, 'is_active') and self._realtime_db_sync.is_active and self.image_path:
+            # 플래그는 즉시 저장
+            try:
+                flags = self.get_flags()
+                image_id = osp.basename(self.image_path)
+                self._realtime_db_sync.save_flags_async(image_id, flags)
+            except Exception as e:
+                logger.debug(f"플래그 실시간 저장 실패: {e}")
+            return
+
+        # Fallback: realtime sync not available/active -> perform local save (JSON + MongoDB)
+        # Use queue_event to avoid blocking UI thread directly and to keep consistency with other queued actions
+        try:
+            def _save_flags_now():
+                try:
+                    # Ensure we have an image path
+                    if not getattr(self, 'image_path', None):
+                        return
+                    # Collect flags and trigger save_labels which writes JSON and calls MongoDB save path
+                    # Use current label file target (will write <image_basename>.json when appropriate)
+                    base_no_ext, _ = osp.splitext(self.image_path)
+                    json_target = f"{base_no_ext}.json"
+
+                    # Update other_data flags if this structure is used
+                    flags = self.get_flags()
+                    if not isinstance(self.other_data, dict):
+                        self.other_data = {}
+                    # store flags in other_data for persistence in JSON
+                    self.other_data['flags'] = flags
+
+                    # Call save_labels which also triggers _save_to_mongodb_with_manager
+                    self.save_labels(json_target)
+                except Exception as _e:
+                    logger.debug(f"플래그 폴백 저장 실패: {_e}")
+
+            self.queue_event(_save_flags_now)
+        except Exception as e:
+            logger.debug(f"플래그 변경 처리 중 예외: {e}")
+            try:
+                flags = self.get_flags()
+                image_id = osp.basename(self.image_path)
+                self._realtime_db_sync.save_flags_async(image_id, flags)
+            except Exception as e:
+                logger.debug(f"플래그 실시간 저장 실패: {e}")
+
+    def _on_flags_changed(self, item=None):
+        """플래그 리스트의 아이템이 변경되었을 때 호출되는 핸들러.
+
+        QListWidget.itemChanged 시그널은 변경된 QListWidgetItem을 전달하므로
+        item 파라미터를 허용합니다. 기존의 도형 변경 핸들러에 구현된
+        실시간 저장/폴백 로직을 재사용하기 위해 _on_shape_changed를 호출합니다.
+        """
+        try:
+            self._on_shape_changed()
+        except Exception as e:
+            logger.debug(f"_on_flags_changed 처리 중 예외: {e}")
+    
+    def _trigger_delayed_save(self):
+        """지연 저장 트리거 (디바운싱)"""
+        if not self._realtime_db_sync or not hasattr(self._realtime_db_sync, 'is_active') or not self._realtime_db_sync.is_active:
+            return
+            
+        if not self.image_path:
+            return
+        
+        try:
+            # 현재 어노테이션 데이터 생성
+            shapes_data = [
+                shape.to_dict() for shape in self.canvas.shapes
+                if not shape.difficult
+            ]
+            
+            flags = {}
+            for i in range(self.flag_widget.count()):
+                item = self.flag_widget.item(i)
+                key = item.text()
+                flag = item.checkState() == Qt.Checked
+                flags[key] = flag
+            
+            # JSON 데이터 구성
+            json_data = {
+                "version": __version__,
+                "flags": flags,
+                "shapes": shapes_data,
+                "imagePath": self.image_path,
+                "imageData": None,  # 이미지 데이터는 제외 (크기 절약)
+                "imageHeight": self.image.height() if self.image else None,
+                "imageWidth": self.image.width() if self.image else None,
+            }
+            
+            # 지연 저장 (설정에서 딜레이 값 가져오기)
+            delay_ms = self._config.get("realtime_sync_delay_ms", 2000)
+            self._realtime_db_sync.save_annotation_delayed(json_data, delay_ms=delay_ms)
+            
+        except Exception as e:
+            logger.debug(f"실시간 저장 데이터 준비 실패: {e}")
+
+    def _get_annotation_manager(self):
+        """AnnotationManager 인스턴스 가져오기"""
+        try:
+            # 부모 윈도우에서 AnnotationManager 인스턴스 가져오기
+            # self.parent may be either a callable (QWidget.parent) or an
+            # attribute assigned at construction. Handle both cases.
+            try:
+                parent_widget = self.parent() if callable(self.parent) else self.parent
+            except Exception:
+                parent_widget = self.parent
+            if parent_widget:
+                # LabelingWrapper -> MainWindow 경로 탐색
+                main_window = None
+                if hasattr(parent_widget, 'parent') and callable(parent_widget.parent):
+                    main_window = parent_widget.parent()
+                elif hasattr(parent_widget, 'parent') and not callable(parent_widget.parent):
+                    main_window = parent_widget.parent
+                
+                # MainWindow에서 annotation_manager 찾기
+                if main_window and hasattr(main_window, 'annotation_manager'):
+                    return main_window.annotation_manager
+                
+                # 또는 parent_widget 자체에서 찾기
+                if hasattr(parent_widget, 'annotation_manager'):
+                    return parent_widget.annotation_manager
+            
+            # AnnotationManager가 없다면 새로 생성 (설정에서 MongoDB 정보 가져오기)
+            try:
+                from anylabeling.services.annotation_manager import AnnotationManager
+            except ImportError:
+                logger.debug("AnnotationManager 모듈을 찾을 수 없음")
+                return None
+            
+            try:
+                # MongoDB 설정 읽기
+                mongo_config_path = osp.join(osp.dirname(__file__), '..', '..', 'mongo_config.json')
+                if osp.exists(mongo_config_path):
+                    import json
+                    with open(mongo_config_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    
+                    connection_string = f"mongodb://{config.get('host', 'localhost')}:{config.get('port', 27017)}"
+                    db_name = config.get('database', 'annotation_db')
+                    
+                    annotation_manager = AnnotationManager(
+                        connection_string=connection_string,
+                        db_name=db_name
+                    )
+                    
+                    # 메인 윈도우에 저장하여 재사용
+                    if parent_widget:
+                        main_window = None
+                        if hasattr(parent_widget, 'parent') and callable(parent_widget.parent):
+                            main_window = parent_widget.parent()
+                        elif hasattr(parent_widget, 'parent') and not callable(parent_widget.parent):
+                            main_window = parent_widget.parent
+                        
+                        if main_window:
+                            main_window.annotation_manager = annotation_manager
+                        else:
+                            parent_widget.annotation_manager = annotation_manager
+                    
+                    return annotation_manager
+                else:
+                    logger.debug("MongoDB 설정 파일을 찾을 수 없음")
+                    return None
+                    
+            except Exception as e:
+                logger.debug(f"AnnotationManager 생성 실패: {e}")
+                return None
+                
+        except Exception as e:
+            logger.debug(f"AnnotationManager 인스턴스 가져오기 실패: {e}")
+            return None
+
     def _save_to_mongodb(self, shapes_data, json_path):
-        """MongoDB에 이미지와 어노테이션 정보 저장"""
+        """MongoDB에 이미지와 어노테이션 정보 저장 (기존 방식 유지)"""
         try:
             # 부모 윈도우에서 MongoDB 클라이언트 가져오기 (MainWindow -> LabelingWrapper -> LabelingWidget)
             mongo_storage = None
             if hasattr(self, 'parent'):
                 wrapper = self.parent()
                 if wrapper and hasattr(wrapper, 'parent'):
-                    main_window = wrapper.parent
+                    # parent()가 함수인 경우와 속성인 경우 모두 처리
+                    try:
+                        main_window = wrapper.parent() if callable(wrapper.parent) else wrapper.parent
+                    except:
+                        main_window = wrapper.parent if hasattr(wrapper, 'parent') else None
+                    
                     if main_window and hasattr(main_window, 'mongo_storage'):
                         mongo_storage = main_window.mongo_storage
             
@@ -3609,6 +4138,9 @@ class LabelingWidget(LabelDialog):
             self.actions.undo_last_point.setEnabled(False)
             self.actions.undo.setEnabled(True)
             self.set_dirty()
+            
+            # 새 도형 생성 시 실시간 저장 트리거
+            self._on_shape_changed()
         else:
             self.canvas.undo_last_line()
             self.canvas.shapes_backups.pop()
@@ -3948,9 +4480,8 @@ class LabelingWidget(LabelDialog):
 
         # load label flags
         flags = {k: False for k in self.image_flags or []}
-
-        json_loaded = False
         # 1) JSON 존재 시 (description 포함 케이스) 우선 로드
+        json_loaded = False  # 초기화를 try 블록 밖으로 이동
         try:
             json_path = osp.splitext(filename)[0] + '.json'
             if osp.exists(json_path):
@@ -3973,7 +4504,7 @@ class LabelingWidget(LabelDialog):
                     self.shape_text_edit.setPlainText(img_desc)
                     self.shape_text_edit.textChanged.connect(self.shape_text_changed)
                     self.shape_text_edit.setDisabled(False)
-                json_loaded = True
+                json_loaded = True  # JSON이 성공적으로 로드되었을 때만 True
         except Exception as e:  # pragma: no cover
             logger.warning(f"JSON 라벨 로드 실패: {e}")
             self.label_file = None
@@ -4116,7 +4647,228 @@ class LabelingWidget(LabelDialog):
     # (디버그 출력 제거됨)
         self.update_file_status_info()  # 파일 번호/총 개수 정보 업데이트
         self.update_thumbnail_display()
+        # 현재 이미지의 검수 상태 갱신
+        try:
+            self._refresh_review_status_ui()
+        except Exception:
+            pass
         return True
+
+    # -------------------- Review(검수) 통합 위젯 로직 --------------------
+    def _get_mainwindow(self):
+        try:
+            # LabelingWidget(self) -> LabelingWrapper(parent) -> MainWindow(parent)
+            p = getattr(self, 'parent', None)
+            if p is None and hasattr(self, 'parent') and callable(self.parent):
+                p = self.parent()
+            # 1단계
+            if hasattr(p, 'parent'):
+                pp = p.parent if not callable(p.parent) else p.parent()
+            else:
+                pp = None
+            return pp if pp is not None else p
+        except Exception:
+            return None
+
+    def _get_mongo_storage(self):
+        mw = self._get_mainwindow()
+        if mw and hasattr(mw, 'mongo_storage'):
+            try:
+                storage = mw.mongo_storage
+                # 연결 테스트가 가능하면 확인
+                if storage and hasattr(storage, 'test_connection'):
+                    try:
+                        if not storage.test_connection():
+                            return None
+                    except Exception:
+                        return None
+                return storage
+            except Exception:
+                return None
+        return None
+
+    def _current_image_identity(self):
+        """현재 이미지의 image_id(파일명)과 절대경로를 반환"""
+        try:
+            img_path = self.get_image_file()
+        except Exception:
+            img_path = self.filename
+        img_path = str(img_path) if img_path else ''
+        abs_path = osp.abspath(img_path) if img_path else ''
+        image_id = osp.basename(abs_path) if abs_path else ''
+        return image_id, abs_path
+
+    def _refresh_review_status_ui(self):
+        storage = self._get_mongo_storage()
+        image_id, abs_path = self._current_image_identity()
+        if not image_id:
+            self.review_status_label.setText(self.tr("검수 상태: -"))
+            return
+
+        status = None
+        stage = None
+        reason = None
+
+        # 1) 가능하면 DB에서 우선 조회
+        if storage:
+            try:
+                doc = storage.images.find_one({"image_id": image_id})
+                if doc:
+                    # 중첩/개별 필드 모두 지원
+                    if isinstance(doc.get('review'), dict):
+                        status = doc['review'].get('status', status)
+                        stage = doc['review'].get('stage', stage)
+                        reason = doc['review'].get('reject_reason', reason)
+                    status = doc.get('review_status', status)
+                    stage = doc.get('review_stage', stage)
+                    reason = doc.get('reject_reason', reason)
+            except Exception:
+                # DB 조회 실패는 무시하고 JSON 폴백 시도
+                pass
+
+        # 2) DB에 상태가 없거나 DB 미연결이면 JSON 폴백
+        if status is None:
+            try:
+                json_path = osp.splitext(self.filename or abs_path)[0] + '.json'
+                if json_path and osp.exists(json_path):
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        j = json.load(f)
+                    # review_history 최신 항목 우선 사용
+                    rh = j.get('review_history')
+                    if isinstance(rh, list) and rh:
+                        last = rh[-1]
+                        if isinstance(last, dict):
+                            status = last.get('status', status)
+                            stage = last.get('stage', stage)
+                            reason = last.get('reject_reason', reason)
+                    # 레거시 필드도 지원
+                    if status is None:
+                        if isinstance(j.get('review'), dict):
+                            r = j.get('review')
+                            status = r.get('status', status)
+                            stage = r.get('stage', stage)
+                            reason = r.get('reject_reason', reason)
+                        status = j.get('review_status', status)
+                        stage = j.get('review_stage', stage)
+                        reason = j.get('reject_reason', reason)
+            except Exception:
+                # JSON 로드 실패는 무시
+                pass
+
+        # 3) UI 갱신
+        if status:
+            text = self.tr("검수 상태: %s") % str(status)
+            if stage is not None:
+                text += f"  (stage: {stage})"
+            if reason:
+                text += f"\n사유: {reason}"
+            self.review_status_label.setText(text)
+        else:
+            # 상태를 구하지 못했을 때, DB가 없으면 안내 문구 유지
+            if not storage:
+                self.review_status_label.setText(self.tr("검수 상태: (DB 미연결)"))
+            else:
+                self.review_status_label.setText(self.tr("검수 상태: -"))
+
+    def on_request_review_clicked(self):
+        self._update_review_status('requested')
+
+    def on_reject_review_clicked(self):
+        # 간단한 사유 입력 받기
+        reason, ok = QtWidgets.QInputDialog.getText(
+            self,
+            self.tr('반려 사유'),
+            self.tr('반려 사유를 입력하세요:'),
+        )
+        if not ok:
+            return
+        self._update_review_status('rejected', reject_reason=str(reason))
+
+    def _update_review_status(self, status: str, reject_reason: str = None):
+        storage = self._get_mongo_storage()
+        if not storage:
+            QMessageBox.warning(self, self.tr("검수"), self.tr("MongoDB에 연결할 수 없습니다."))
+            return
+        image_id, abs_path = self._current_image_identity()
+        if not image_id:
+            QMessageBox.warning(self, self.tr("검수"), self.tr("현재 열린 이미지가 없습니다."))
+            return
+        try:
+            from datetime import datetime
+            # 이미지 문서에 리뷰 상태를 저장 (상/하위 호환을 위해 중첩 및 단일 필드 병행)
+            review_doc = {
+                'image_id': image_id,
+                'file_path': abs_path,
+                'review': {
+                    'status': status,
+                    'stage': 1,
+                    'reject_reason': reject_reason or '',
+                    'updated_at': datetime.now(),
+                },
+                'review_status': status,
+                'review_stage': 1,
+                'reject_reason': reject_reason or '',
+                'review_updated_at': datetime.now(),
+            }
+            # upsert로 안전 갱신
+            if hasattr(storage, 'upsert_image'):
+                storage.upsert_image(review_doc)
+            else:
+                storage.images.update_one({'image_id': image_id}, {'$set': review_doc}, upsert=True)
+
+            # --- JSON 동기화 ---
+            # 정책: 기존 JSON이 있을 때만 insert(append) 수행(새로 생성하지 않음)
+            # UI(other_data)에도 즉시 반영하여 이후 저장 시 포함되도록 함
+            try:
+                ts = datetime.now().isoformat()
+                # other_data에 반영 (차후 save_labels 시 포함)
+                if not hasattr(self, 'other_data') or self.other_data is None:
+                    self.other_data = {}
+                self.other_data['review'] = {
+                    'status': status,
+                    'stage': 1,
+                    'reject_reason': reject_reason or '',
+                    'updated_at': ts,
+                }
+                self.other_data['review_status'] = status
+                self.other_data['review_stage'] = 1
+                self.other_data['reject_reason'] = reject_reason or ''
+                self.other_data['review_updated_at'] = ts
+
+                # 존재하는 JSON 파일이 있으면 직접 갱신
+                json_path = osp.splitext(self.filename or abs_path)[0] + '.json'
+                if json_path and osp.exists(json_path):
+                    try:
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            j = json.load(f)
+                        # 갱신 대신 insert: review_history 배열에 새로운 항목을 추가
+                        entry = {
+                            'status': status,
+                            'stage': 1,
+                            'reject_reason': reject_reason or '',
+                            'updated_at': ts,
+                        }
+                        history = j.get('review_history')
+                        if not isinstance(history, list):
+                            history = [history] if isinstance(history, dict) else ([] if history is None else [history])
+                        history.append(entry)
+                        j['review_history'] = history
+                        with open(json_path, 'w', encoding='utf-8') as f:
+                            json.dump(j, f, ensure_ascii=False, indent=2)
+                    except Exception:
+                        logger.warning("JSON 갱신 중 오류 발생")
+                        pass
+            except Exception:
+                pass
+
+            # UI 갱신 및 사용자 알림
+            self._refresh_review_status_ui()
+            if status == 'requested':
+                self.statusBar().showMessage(self.tr("1차 검수 요청이 등록되었습니다."), 2000)
+            elif status == 'rejected':
+                self.statusBar().showMessage(self.tr("반려가 등록되었습니다."), 2000)
+        except Exception as e:
+            QMessageBox.critical(self, self.tr("검수 업데이트 오류"), str(e))
 
     # QT Overload
     def keyPressEvent(self, event):
@@ -4174,6 +4926,14 @@ class LabelingWidget(LabelDialog):
 
     # QT Overload
     def closeEvent(self, event):
+        # 실시간 DB 동기화 정리
+        if self._realtime_db_sync:
+            try:
+                self._realtime_db_sync.stop()
+                logger.info("실시간 DB 동기화가 정리되었습니다")
+            except Exception as e:
+                logger.warning(f"실시간 DB 동기화 정리 중 오류: {e}")
+        
         if not self.may_continue():
             event.ignore()
         self.settings.setValue(
@@ -4212,6 +4972,8 @@ class LabelingWidget(LabelDialog):
 
     def open_checked_image(self, end_index, step, load=True):
         if not self.may_continue():
+            return
+        # 네비게이션 직전 지연 저장 플러시
             return
         # 네비게이션 직전 지연 저장 플러시
         self._flush_pending_auto_save()
@@ -4276,12 +5038,24 @@ class LabelingWidget(LabelDialog):
         if self.filename is None:
             return
 
-        current_index = self.fn_to_index[str(self.filename)]
-        if current_index - 1 >= 0:
-            filename = self.image_list[current_index - 1]
-            if filename:
+        current_index = self.fn_to_index.get(str(self.filename), 0)
+        # 뒤로 이동하면서 로드 가능한 첫 이미지를 찾는다
+        for i in range(current_index - 1, -1, -1):
+            filename = self.image_list[i]
+            if not filename:
+                continue
+            try:
                 self._flush_pending_auto_save()
                 self.load_file(filename)
+                # UI 동기화
+                if self.file_list_widget.count() > i:
+                    self.file_list_widget.setCurrentRow(i)
+                    self.file_list_widget.repaint()
+                return
+            except Exception:
+                # 실패 파일은 추적 후 계속 스킵
+                self._bad_images.add(filename)
+                continue
 
     def open_next_image(self, _value=False, load=True):
         if not self.may_continue():
@@ -4290,20 +5064,40 @@ class LabelingWidget(LabelDialog):
         if len(self.image_list) <= 0:
             return
 
-        filename = None
+        # 현재 인덱스 기준 앞으로 진행하며 로드 가능한 첫 이미지를 찾는다
         if self.filename is None:
-            filename = self.image_list[0]
+            start = 0
         else:
-            current_index = self.fn_to_index[str(self.filename)]
-            if current_index + 1 < len(self.image_list):
-                filename = self.image_list[current_index + 1]
-            else:
-                filename = self.image_list[-1]
-        self.filename = filename
+            start = self.fn_to_index.get(str(self.filename), -1) + 1
 
-        if self.filename and load:
-            self._flush_pending_auto_save()
-            self.load_file(self.filename)
+        # 범위를 벗어나면 종료
+        if start < 0 or start >= len(self.image_list):
+            return
+
+        for i in range(start, len(self.image_list)):
+            filename = self.image_list[i]
+            if not filename:
+                continue
+            if not load:
+                # 로드 없이 인덱스만 이동해야 하는 요구가 있을 경우
+                self.filename = filename
+                if self.file_list_widget.count() > i:
+                    self.file_list_widget.setCurrentRow(i)
+                    self.file_list_widget.repaint()
+                return
+            try:
+                self._flush_pending_auto_save()
+                self.load_file(filename)
+                self.filename = filename
+                # UI 동기화
+                if self.file_list_widget.count() > i:
+                    self.file_list_widget.setCurrentRow(i)
+                    self.file_list_widget.repaint()
+                return
+            except Exception:
+                # 실패 파일은 추적 후 계속 시도
+                self._bad_images.add(filename)
+                continue
 
     # File
     def open_file(self, _value=False):
@@ -4660,6 +5454,19 @@ class LabelingWidget(LabelDialog):
         # classes.txt 존재/생성 처리
         if target_dir_path and os.path.isdir(target_dir_path):
             self._ensure_classes_in_dir(target_dir_path)
+            # MainWindow가 있으면 동기화 폴더 자동 추가
+            # 위젯 계층을 따라 올라가 MainWindow를 안정적으로 찾습니다.
+            parent = self
+            while parent is not None and not hasattr(parent, 'add_sync_watch_directory'):
+                if hasattr(parent, 'parent') and callable(parent.parent):
+                    parent = parent.parent()
+                elif hasattr(parent, 'parent'):
+                    parent = parent.parent
+                else:
+                    parent = None
+            
+            if parent is not None and hasattr(parent, 'add_sync_watch_directory'):
+                parent.add_sync_watch_directory(target_dir_path)
 
     @property
     def image_list(self):

@@ -1,0 +1,16 @@
+{
+  "uri": "mongodb://localhost:27017/",
+  "db_name": "labeling_db",
+  "collections": {
+    "annotations": "annotations",
+    "images": "images",
+    "flags": "flags"
+  },
+  "embedding": {
+    "enabled": true,
+    "model": "all-MiniLM-L6-v2"
+  },
+  "limits": {
+    "aggregation_limit": 1000
+  }
+}

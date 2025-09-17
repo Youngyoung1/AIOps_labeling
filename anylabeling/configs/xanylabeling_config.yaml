@@ -22,6 +22,23 @@ logger_level: info
 system_clipboard: false
 switch_to_checked: false
 
+# 실시간 데이터베이스 동기화 설정
+enable_realtime_db_sync: true
+realtime_sync_delay_ms: 2000  # 지연 저장 딜레이 (밀리초)
+show_mongodb_save_notification: false
+
+# 빠른 시작 및 인스턴스 관리 설정
+enable_startup_cache: true
+enable_instance_manager: true
+max_app_instances: 3
+instance_port_range: [9900, 9999]
+cache_expiry_hours: 24
+
+# CLI 인수 관련 설정
+instance_mode: false
+port: null
+minimal_init: false
+
 flags: null
 label_flags: null
 labels: null

@@ -111,10 +111,10 @@ class PlateRecognitionService:
         
         # MongoDB 및 로컬 설정 로드
         try:
-            from .storage.mongodb_client import MongoStorage
+            from .storage.mongo_provider import get_storage
             from .network_storage import network_config, image_manager
             
-            self.mongo_storage = MongoStorage()
+            self.mongo_storage = get_storage()
             self.network_config = network_config
             self.image_manager = image_manager
             print("✅ MongoDB 및 로컬 설정 로드 완료")

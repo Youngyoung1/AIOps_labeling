@@ -4709,51 +4709,78 @@ class LabelingWidget(LabelDialog):
         stage = None
         reason = None
 
-        # 1) 가능하면 DB에서 우선 조회
+        # 1) JSON 우선 판단
+        json_status = None
+        json_stage = None
+        json_reason = None
+        try:
+            json_path = osp.splitext(self.filename or abs_path)[0] + '.json'
+            if json_path and osp.exists(json_path):
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    j = json.load(f)
+                # review_updated_at 최신 항목 우선 사용
+                rh = j.get('review_updated_at')
+                if isinstance(rh, list) and rh:
+                    last = rh[-1]
+                    if isinstance(last, dict):
+                        json_status = last.get('status', json_status)
+                        json_stage = last.get('stage', json_stage)
+                        json_reason = last.get('reject_reason', json_reason)
+                # 레거시 필드도 지원 (history 없을 때)
+                if json_status is None:
+                    if isinstance(j.get('review'), dict):
+                        r = j.get('review')
+                        json_status = r.get('status', json_status)
+                        json_stage = r.get('stage', json_stage)
+                        json_reason = r.get('reject_reason', json_reason)
+                    json_status = j.get('review_status', json_status)
+                    json_stage = j.get('review_stage', json_stage)
+                    json_reason = j.get('reject_reason', json_reason)
+        except Exception:
+            # JSON 로드 실패는 무시하고 DB로 진행
+            pass
+
+        # 2) DB 상태 조회 (JSON과 비교 위해 항상 조회 시도)
+        db_status = None
+        db_stage = None
+        db_reason = None
         if storage:
             try:
                 doc = storage.images.find_one({"image_id": image_id})
                 if doc:
-                    # 중첩/개별 필드 모두 지원
                     if isinstance(doc.get('review'), dict):
-                        status = doc['review'].get('status', status)
-                        stage = doc['review'].get('stage', stage)
-                        reason = doc['review'].get('reject_reason', reason)
-                    status = doc.get('review_status', status)
-                    stage = doc.get('review_stage', stage)
-                    reason = doc.get('reject_reason', reason)
+                        db_status = doc['review'].get('status', db_status)
+                        db_stage = doc['review'].get('stage', db_stage)
+                        db_reason = doc['review'].get('reject_reason', db_reason)
+                    db_status = doc.get('review_status', db_status)
+                    db_stage = doc.get('review_stage', db_stage)
+                    db_reason = doc.get('reject_reason', db_reason)
             except Exception:
-                # DB 조회 실패는 무시하고 JSON 폴백 시도
                 pass
 
-        # 2) DB에 상태가 없거나 DB 미연결이면 JSON 폴백
-        if status is None:
-            try:
-                json_path = osp.splitext(self.filename or abs_path)[0] + '.json'
-                if json_path and osp.exists(json_path):
-                    with open(json_path, 'r', encoding='utf-8') as f:
-                        j = json.load(f)
-                    # review_history 최신 항목 우선 사용
-                    rh = j.get('review_history')
-                    if isinstance(rh, list) and rh:
-                        last = rh[-1]
-                        if isinstance(last, dict):
-                            status = last.get('status', status)
-                            stage = last.get('stage', stage)
-                            reason = last.get('reject_reason', reason)
-                    # 레거시 필드도 지원
-                    if status is None:
-                        if isinstance(j.get('review'), dict):
-                            r = j.get('review')
-                            status = r.get('status', status)
-                            stage = r.get('stage', stage)
-                            reason = r.get('reject_reason', reason)
-                        status = j.get('review_status', status)
-                        stage = j.get('review_stage', stage)
-                        reason = j.get('reject_reason', reason)
-            except Exception:
-                # JSON 로드 실패는 무시
-                pass
+        # 3) 최종 결정: JSON 우선, 불일치면 DB를 JSON으로 보정
+        if json_status is not None:
+            status, stage, reason = json_status, json_stage, json_reason
+            # DB와 불일치 또는 DB 비어있음 → DB 업데이트
+            if storage and (db_status is None or str(db_status) != str(json_status)):
+                try:
+                    update_fields = {
+                        'review_status': json_status,
+                        'review_stage': json_stage if json_stage is not None else 1,
+                        'reject_reason': json_reason or '',
+                        'file_path': abs_path,
+                    }
+                    # 중첩 필드 병행 유지
+                    update_fields['review.status'] = json_status
+                    update_fields['review.stage'] = json_stage if json_stage is not None else 1
+                    update_fields['review.reject_reason'] = json_reason or ''
+                    storage.images.update_one({'image_id': image_id}, {'$set': update_fields}, upsert=True)
+                except Exception:
+                    pass
+        else:
+            # JSON에 없으면 DB 값 사용
+            if db_status is not None:
+                status, stage, reason = db_status, db_stage, db_reason
 
         # 3) UI 갱신
         if status:
@@ -4841,18 +4868,36 @@ class LabelingWidget(LabelDialog):
                     try:
                         with open(json_path, 'r', encoding='utf-8') as f:
                             j = json.load(f)
-                        # 갱신 대신 insert: review_history 배열에 새로운 항목을 추가
+                        # 1) review_history가 이미 리스트로 존재할 때만 append (없으면 생성하지 않음)
                         entry = {
                             'status': status,
                             'stage': 1,
                             'reject_reason': reject_reason or '',
                             'updated_at': ts,
                         }
-                        history = j.get('review_history')
-                        if not isinstance(history, list):
-                            history = [history] if isinstance(history, dict) else ([] if history is None else [history])
-                        history.append(entry)
-                        j['review_history'] = history
+                        history = j.get('review_history', None)
+                        if isinstance(history, list):
+                            history.append(entry)
+                            j['review_history'] = history
+
+                        # 2) 평탄 및 중첩 필드 항상 최신값으로 갱신 (camel/snake 병행 기록)
+                        j['review'] = j.get('review', {}) if isinstance(j.get('review'), dict) else {}
+                        j['review'].update({
+                            'status': status,
+                            'stage': 1,
+                            'reject_reason': reject_reason or '',
+                            'updated_at': ts,
+                        })
+                        # snake_case
+                        j['review_status'] = status
+                        j['review_stage'] = 1
+                        j['reject_reason'] = reject_reason or ''
+                        j['review_updated_at'] = ts
+                        # camelCase 병행
+                        j['reviewStatus'] = status
+                        j['reviewStage'] = 1
+                        j['rejectReason'] = reject_reason or ''
+
                         with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(j, f, ensure_ascii=False, indent=2)
                     except Exception:

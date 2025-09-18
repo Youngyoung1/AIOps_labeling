@@ -252,8 +252,8 @@ class ActionButtonWidget(QWidget):
             """)
             reject_flow_btn.clicked.connect(lambda: self.review_requested.emit(self.annotation_id, "reject_flow"))
 
-            # 사진 보기 버튼
-            view_btn = QPushButton("사진 보기")
+            # 검수 사진 보기 버튼
+            view_btn = QPushButton("검수 사진 보기")
             view_btn.setStyleSheet("""
                 QPushButton { 
                     background: #f59e0b; 

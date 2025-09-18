@@ -23,7 +23,7 @@ class ImageGallery(QDialog):
 
     def __init__(self, image_paths, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("사진 보기 (DB)")
+        self.setWindowTitle("검수 사진 (DB)")
         self.setMinimumSize(800, 600)
 
         self.image_paths = image_paths

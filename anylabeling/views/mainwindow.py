@@ -132,12 +132,12 @@ class MainWindow(QMainWindow):
         manage_action.setShortcut('Ctrl+Shift+D')
         manage_action.triggered.connect(self.open_db_manager_dialog)
         db_menu.addAction(manage_action)
-        
-        # 사진 보기 액션
-        gallery_action = QAction('사진 보기', self)
+
+        # 검수 사진 액션
+        gallery_action = QAction('검수 사진', self)
         gallery_action.triggered.connect(self.show_image_gallery)
         db_menu.addAction(gallery_action)
-        
+
         db_menu.addSeparator()
 
         # (선택) 개선된 검수 위젯 열기 - 실험적
@@ -218,6 +218,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, 'DB 관리 오류', f'DB 관리 창을 여는 중 오류가 발생했습니다:\n{str(e)}')
     def open_review_manager_with_check(self):
         """'데이터베이스 관리' 메뉴 클릭 시 호출됩니다. description 존재 여부를 확인하고 검수 창을 엽니다."""
+        # 실행 전 JSON 변경분 선 동기화
+        try:
+            self._pre_sync_json_changes()
+        except Exception as e:
+            print(f"[DEBUG] 사전 동기화 오류(open_review_manager_with_check): {e}")
         # 1) MongoDB에서 먼저 확인하고, 파일 경로를 찾아 열어준 뒤 리뷰 창을 연다
         if self._open_from_mongo_if_description_present():
             return
@@ -502,8 +507,13 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "검수 관리 오류", f"검수 관리 창을 여는 중 오류가 발생했습니다:\n{str(e)}")
 
     def show_image_gallery(self, status_cond=None, use_json_status_filter=False):
-        """라벨미 검수 프로그램과 동일한 로직으로 DB에서 이미지를 찾아 갤러리 형태로 보여줍니다."""
         try:
+            # 실행 전 JSON 변경분 선 동기화
+            try:
+                self._pre_sync_json_changes()
+            except Exception as e:
+                print(f"[DEBUG] 사전 동기화 오류(show_image_gallery): {e}")
+
             storage = getattr(self, 'mongo_storage', None)
             if not storage:
                 QMessageBox.critical(self, "오류", "데이터베이스에 연결할 수 없습니다.")
@@ -520,7 +530,7 @@ class MainWindow(QMainWindow):
             class StatusPicker(QDialog):
                 def __init__(self, parent=None):
                     super().__init__(parent)
-                    self.setWindowTitle("사진 보기 - 상태 필터")
+                    self.setWindowTitle("검수 사진 - 상태 필터")
                     self.setFixedSize(300, 150)
                     layout = QVBoxLayout(self)
                     
@@ -537,7 +547,7 @@ class MainWindow(QMainWindow):
                     layout.addLayout(row)
 
                     btn_row = QHBoxLayout()
-                    self.view_btn = QPushButton("보기")
+                    self.view_btn = QPushButton("열기")
                     self.close_btn = QPushButton("닫기")
                     btn_row.addStretch(1)
                     btn_row.addWidget(self.view_btn)
@@ -547,39 +557,111 @@ class MainWindow(QMainWindow):
                     self.close_btn.clicked.connect(self.reject)
 
             def _get_effective_status_from_doc(doc):
-                """단순화된 상태 판별 로직 - JSON 파일도 함께 확인"""
-                # 디버그: 실제 데이터 구조 확인
+                """review_status/reviewStatus가 있으면 항상 그 값을 최우선으로 사용, 없으면 review_history/JSON 우선"""
                 image_path = doc.get('image_file_path', doc.get('imagePath', 'Unknown'))
                 print(f"\n[DEBUG] === 문서 분석: {image_path} ===")
-                
+
+                # 1순위: review_status/reviewStatus (항상 최우선)
+                status = doc.get('review_status') or doc.get('reviewStatus')
+                if status:
+                    status_str = str(status).strip()
+                    print(f"  review_status: '{status_str}' (최우선 적용)")
+                    if status_str.lower() == 'requested':
+                        print(f"  → review_status에서 1차 검수 요청 후")
+                        return '1차 검수 요청 후'
+                    elif status_str.lower() == 'rejected':
+                        print(f"  → review_status에서 반려")
+                        return '반려'
+                    else:
+                        print(f"  → review_status 알 수 없는 상태: {status_str}")
+                        return '1차 검수 요청 전'
+
+                # 헬퍼: JSON 경로 추론 + 로드 (flat/nested/status 포함 확인)
+                def _resolve_json_path_from_doc(d):
+                    # 1) 명시적 경로 필드들
+                    for key in ('json_file_path', 'jsonPath', 'annotation_path', 'json_path', 'jsonFile'):
+                        jp = d.get(key)
+                        if isinstance(jp, str) and os.path.exists(jp):
+                            return jp
+                    # 2) 이미지 경로에서 치환
+                    for key in ('image_file_path', 'imagePath', 'file_path', 'path'):
+                        ip = d.get(key)
+                        if isinstance(ip, str) and ip:
+                            base, _ = osp.splitext(ip)
+                            cand = base + '.json'
+                            if os.path.exists(cand):
+                                return cand
+                    # 3) image_id + 디렉터리 조합 시도
+                    image_id = d.get('image_id') or d.get('filename')
+                    img_dir = d.get('image_directory')
+                    if isinstance(image_id, str):
+                        # 확장자 교체
+                        base, _ = osp.splitext(image_id)
+                        name_json = base + '.json'
+                        if img_dir and isinstance(img_dir, str):
+                            cand = osp.normpath(osp.join(img_dir, name_json))
+                            if os.path.exists(cand):
+                                return cand
+                        # 기본 디렉터리 힌트(프로젝트 내 자주 쓰는 경로)
+                        for hint_dir in (
+                            r"C:\\Users\\pc\\Desktop\\인턴\\SKPoC\\Unclear_file",
+                            os.getcwd(),
+                        ):
+                            cand = osp.normpath(osp.join(hint_dir, name_json))
+                            if os.path.exists(cand):
+                                return cand
+                    return None
+
+                def _read_json_fields(jpath):
+                    if not jpath or not os.path.exists(jpath):
+                        return None
+                    try:
+                        with open(jpath, 'r', encoding='utf-8') as f:
+                            j = json.load(f)
+                        # flat 우선, 없으면 nested, 마지막으로 history
+                        j_status = (
+                            j.get('review_status') or j.get('reviewStatus') or
+                            (j.get('review', {}) or {}).get('status')
+                        )
+                        j_history = j.get('review_history')
+                        return {
+                            'status': j_status,
+                            'history': j_history if isinstance(j_history, list) else None,
+                        }
+                    except Exception as e:
+                        print(f"  JSON 파일 읽기 실패: {jpath} -> {e}")
+                        return None
+
+                # 2순위: review_history (MongoDB/JSON)
                 review_history = doc.get('review_history', [])
                 print(f"  MongoDB review_history: {review_history}")
-                
-                # MongoDB에 review_history가 없으면 JSON 파일에서 직접 읽기
+
                 if not review_history or review_history is None:
                     print(f"  MongoDB에 review_history 없음, JSON 파일 확인 시도...")
                     json_path = doc.get('json_file_path')
-                    if json_path and isinstance(json_path, str) and os.path.exists(json_path):
+                    if not (isinstance(json_path, str) and os.path.exists(json_path)):
+                        json_path = _resolve_json_path_from_doc(doc)
+                        # 파생된 json_path를 DB에 역으로 저장하여 다음부터 빠르게 접근
                         try:
-                            with open(json_path, 'r', encoding='utf-8') as f:
-                                json_data = json.load(f)
-                                review_history = json_data.get('review_history', [])
-                                print(f"  JSON 파일에서 읽은 review_history: {review_history}")
-                        except Exception as e:
-                            print(f"  JSON 파일 읽기 실패: {e}")
-                            review_history = []
+                            if storage and json_path and os.path.exists(json_path) and not doc.get('json_file_path'):
+                                if '_id' in doc:
+                                    storage.annotations.update_one({'_id': doc['_id']}, {'$set': {'json_file_path': json_path}})
+                                    print(f"  [DEBUG] DB backfill: json_file_path := {json_path}")
+                        except Exception as _e:
+                            print(f"  [DEBUG] DB backfill 실패(json_file_path): {_e}")
+                    json_info = _read_json_fields(json_path)
+                    if json_info:
+                        review_history = json_info.get('history') or []
+                        print(f"  JSON 파일에서 읽은 review_history: {review_history}")
                     else:
-                        print(f"  JSON 파일 경로 없음 또는 파일 없음: {json_path}")
-                
-                # review_history 상태 판별
+                        print(f"  JSON review_history 조회 실패")
+
                 if isinstance(review_history, list) and review_history:
                     last_entry = review_history[-1]
                     print(f"  마지막 항목: {last_entry}")
-                    
                     if isinstance(last_entry, dict):
                         status = last_entry.get('status', '').strip()
                         print(f"  최신 status: '{status}'")
-                        
                         if status.lower() == 'requested':
                             print(f"  → 1차 검수 요청 후")
                             return '1차 검수 요청 후'
@@ -596,23 +678,8 @@ class MainWindow(QMainWindow):
                         print(f"  마지막 항목이 dict가 아님: {type(last_entry)}")
                 else:
                     print(f"  review_history가 없거나 비어있음")
-                
-                # MongoDB의 다른 상태 필드 확인
-                status = doc.get('review_status') or doc.get('reviewStatus')
-                if status:
-                    status_str = str(status).strip()
-                    print(f"  review_status: '{status_str}'")
-                    if status_str.lower() == 'requested':
-                        print(f"  → review_status에서 1차 검수 요청 후")
-                        return '1차 검수 요청 후'
-                    elif status_str.lower() == 'rejected':
-                        print(f"  → review_status에서 반려")
-                        return '반려'
-                    else:
-                        print(f"  → review_status 알 수 없는 상태: {status_str}")
-                        return '1차 검수 요청 전'
-                
-                # review.status (nested) 확인
+
+                # 3순위: review.status (nested) - DB 우선, 없으면 JSON에서 재시도
                 review = doc.get('review', {})
                 if isinstance(review, dict):
                     status = review.get('status')
@@ -628,8 +695,22 @@ class MainWindow(QMainWindow):
                         else:
                             print(f"  → review.status 알 수 없는 상태: {status_str}")
                             return '1차 검수 요청 전'
-                
-                # 기본값
+
+                # DB에 없어도 JSON flat/nested에서 상태 재시도
+                json_path_fallback = _resolve_json_path_from_doc(doc)
+                json_info_fb = _read_json_fields(json_path_fallback)
+                if json_info_fb:
+                    jstatus = json_info_fb.get('status')
+                    print(f"  JSON flat/nested status: {jstatus}")
+                    if isinstance(jstatus, str) and jstatus.strip():
+                        norm = jstatus.strip().lower()
+                        if norm == 'requested':
+                            return '1차 검수 요청 후'
+                        if norm == 'rejected':
+                            return '반려'
+                        # 기타는 기본값 처리
+                        return '1차 검수 요청 전'
+
                 print(f"  → 모든 상태 필드 없음, 기본값: 1차 검수 요청 전")
                 return '1차 검수 요청 전'
 
@@ -738,10 +819,27 @@ class MainWindow(QMainWindow):
                     status_counts = {}
                     
                     for doc in docs:
-                        # 라벨미와 동일한 상태 판별
+                        # 디버그: 각 문서별 상태 근거 전체 출력
+                        image_path = doc.get('image_file_path', doc.get('imagePath', 'Unknown'))
+                        review_status = doc.get('review_status')
+                        reviewStatus = doc.get('reviewStatus')
+                        review_history = doc.get('review_history')
+                        json_review_history = None
+                        json_path = doc.get('json_file_path')
+                        if (not review_history or review_history is None) and json_path and os.path.exists(json_path):
+                            try:
+                                with open(json_path, 'r', encoding='utf-8') as f:
+                                    json_data = json.load(f)
+                                    json_review_history = json_data.get('review_history', None)
+                            except Exception:
+                                json_review_history = None
                         eff_status = _get_effective_status_from_doc(doc)
+                        print(f"[상태분석] 파일: {image_path}")
+                        print(f"  review_status: {review_status}, reviewStatus: {reviewStatus}")
+                        print(f"  MongoDB review_history: {review_history}")
+                        print(f"  JSON review_history: {json_review_history}")
+                        print(f"  최종 분류: {eff_status}")
                         status_counts[eff_status] = status_counts.get(eff_status, 0) + 1
-                        
                         # 선택된 상태에 맞는지 확인
                         if selected_status == "전체" or eff_status == selected_status:
                             filtered_docs.append(doc)
@@ -788,7 +886,7 @@ class MainWindow(QMainWindow):
                 if not image_paths:
                     QMessageBox.information(
                         self, 
-                        "사진 보기", 
+                        "검수 사진", 
                         f"선택한 상태에 해당하는 이미지가 없습니다.\n\n상태: {selected_status}\n\n※ shape-level description이 있는 이미지만 표시됩니다."
                     )
                     return
@@ -801,6 +899,8 @@ class MainWindow(QMainWindow):
                     print(f"[DEBUG] 갤러리 시그널 연결 오류: {e}")
                 
                 gallery.exec_()
+                # 사진(검수 사진) 보기 다이얼로그 닫기
+                picker.accept()
 
             picker.view_btn.clicked.connect(open_gallery_for_current)
             picker.exec_()
@@ -810,6 +910,108 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, "오류", f"갤러리를 여는 중 오류가 발생했습니다:\n{str(e)}")
+
+    # -------------------- 실행 전 JSON 변경 감지 및 선 동기화 --------------------
+    def _pre_sync_json_changes(self):
+        """UI 및 디버깅 전에 최근 변경된 JSON을 우선 DB에 반영한다.
+        - 현재 작업 컨텍스트에서 후보 디렉토리를 수집
+        - 디렉토리 내 JSON 파일의 mtime을 확인하고, DB상의 해당 문서 updated_at과 비교
+        - JSON이 더 최신이면 JSON→DB 동기화 실행
+        """
+        try:
+            # 동기화 서비스/어노테이션 매니저 확보
+            sync_service = getattr(self, '_json_mongodb_sync_service', None)
+            annotation_manager = getattr(self, 'annotation_manager', None)
+            if not annotation_manager:
+                try:
+                    from anylabeling.services.annotation_manager import AnnotationManager
+                    annotation_manager = AnnotationManager()
+                    # 캐시해두면 이후에도 사용 가능
+                    self.annotation_manager = annotation_manager
+                except Exception:
+                    annotation_manager = None
+
+            if not annotation_manager:
+                print("[DEBUG] 사전 동기화 건너뜀: annotation_manager 없음")
+                return
+
+            collection = getattr(annotation_manager, 'collection', None)
+            if not collection:
+                print("[DEBUG] 사전 동기화 건너뜀: MongoDB collection 없음")
+                return
+
+            # 후보 디렉토리 수집
+            candidate_dirs = set()
+            try:
+                if hasattr(self, 'labeling_widget') and self.labeling_widget:
+                    lw = self.labeling_widget
+                    if hasattr(lw, 'image_path') and lw.image_path:
+                        candidate_dirs.add(os.path.dirname(lw.image_path))
+                    if hasattr(lw, 'output_dir') and lw.output_dir:
+                        candidate_dirs.add(lw.output_dir)
+                    if hasattr(lw, 'image_list') and lw.image_list:
+                        for p in lw.image_list[:100]:  # 너무 많으면 부담되므로 최대 100개만 스캔
+                            try:
+                                candidate_dirs.add(os.path.dirname(p))
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+            # 기본 디렉토리 추가
+            default_dirs = [
+                r"C:\\Users\\pc\\Desktop\\인턴\\SKPoC\\Unclear_file",
+                os.getcwd()
+            ]
+            for d in default_dirs:
+                if os.path.isdir(d):
+                    candidate_dirs.add(d)
+
+            # 스캔 및 동기화
+            synced, scanned, errors = 0, 0, 0
+            for d in list(candidate_dirs)[:10]:  # 과도한 비용 방지: 최대 10개 디렉토리
+                try:
+                    for name in os.listdir(d):
+                        if not name.lower().endswith('.json'):
+                            continue
+                        scanned += 1
+                        json_path = os.path.join(d, name)
+                        try:
+                            json_mtime = os.path.getmtime(json_path)
+                        except Exception:
+                            continue
+
+                        # DB에서 해당 json_file_path 문서 찾기
+                        db_doc = collection.find_one({"json_file_path": os.path.abspath(json_path)}, {"updated_at": 1})
+                        db_updated_ts = None
+                        if db_doc and db_doc.get('updated_at') is not None:
+                            try:
+                                # updated_at이 datetime이면 timestamp로 변환
+                                db_updated_ts = db_doc['updated_at'].timestamp() if hasattr(db_doc['updated_at'], 'timestamp') else None
+                            except Exception:
+                                db_updated_ts = None
+
+                        # JSON이 더 최신이면 동기화
+                        if (db_updated_ts is None) or (json_mtime - (db_updated_ts or 0) > 1.0):  # 1초 여유
+                            try:
+                                if sync_service:
+                                    ok = sync_service.sync_json_to_mongodb(json_path)
+                                else:
+                                    # 서비스 없을 때는 AnnotationManager 직접 사용
+                                    ok = bool(annotation_manager.insert_annotation(json_file_path=json_path))
+                                if ok:
+                                    synced += 1
+                            except Exception as e:
+                                errors += 1
+                                print(f"[DEBUG] 사전 동기화 실패: {json_path} -> {e}")
+                except Exception as e:
+                    print(f"[DEBUG] 디렉토리 스캔 실패: {d} -> {e}")
+
+            if scanned:
+                print(f"[DEBUG] 사전 동기화 스캔: {scanned}개 JSON, 동기화: {synced}건, 오류: {errors}건")
+
+        except Exception as e:
+            print(f"[DEBUG] _pre_sync_json_changes 에러: {e}")
 
     def _get_inner_labeling_widget(self):
         """LabelingWrapper 내부의 실제 LabelingWidget(view)을 반환한다."""

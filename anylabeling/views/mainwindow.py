@@ -17,6 +17,9 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QSizePolicy,
     QWidgetAction,
+    QDialog,
+    QComboBox,
+    QPushButton,
 )
 
 from .image_gallery import ImageGallery
@@ -27,6 +30,7 @@ try:
 except Exception:
     get_storage = None
 from PyQt5.QtWidgets import QWidgetAction, QSizePolicy, QWidget
+from PyQt5.QtCore import Qt
 
 class MainWindow(QMainWindow):
     """Main application window"""
@@ -92,175 +96,18 @@ class MainWindow(QMainWindow):
         status_bar.showMessage(f"{__appname__} - {__appdescription__} | DB: {db_txt}")
         self.setStatusBar(status_bar)
 
+        # 외부 리뷰 창 핸들러
         self.review_window = None
         self.gallery_window = None
-        # 공통 상수: 경로 필드 우선순위 (중복 제거)
-        self.PATH_FIELDS = ("image_file_path", "imagePath", "file_path", "path")
-        
-        # 경로 캐시 (성능 최적화)
-        self._path_cache = {}
+        # 공통 상수: 경로 필드 우선순위
+        self._PATH_FIELDS = ("image_file_path", "imagePath", "file_path", "path")
+
+    # 도크 위젯: 레거시 의존성 제거됨 (LabelDock/FileDock/AnnotationDock 미정의)
+    # 필요 시, labeling.label_widget 내부의 도크들을 사용하세요.
 
     def set_top_file_index_text(self, text: str):
         if hasattr(self, 'file_index_label_top'):
             self.file_index_label_top.setText(text)
-
-    # -------------------- 최적화된 헬퍼 함수들 --------------------
-
-    def get_valid_image_paths_from_db(self, query_conditions, limit=None):
-        """DB에서 유효한 이미지 경로들을 가져옴"""
-        try:
-            storage = self.mongo_storage
-            if not storage or not storage.test_connection():
-                return []
-
-            cursor = storage.images.find(query_conditions)
-            if limit:
-                cursor = cursor.limit(limit)
-
-            valid_paths = []
-            seen_paths = set()
-
-            for doc in cursor:
-                path = self._extract_path(doc)
-                if path and path not in seen_paths and os.path.exists(path):
-                    valid_paths.append(path)
-                    seen_paths.add(path)
-
-            return valid_paths
-        except Exception as e:
-            print(f"[DEBUG] get_valid_image_paths_from_db 오류: {e}")
-            return []
-
-    def _extract_path(self, doc):
-        """문서에서 경로 추출"""
-        # 캐시 확인
-        doc_id = str(doc.get('_id', ''))
-        if doc_id in self._path_cache:
-            cached_path = self._path_cache[doc_id]
-            if os.path.exists(cached_path):
-                return cached_path
-
-        # 우선순위 필드에서 경로 추출
-        for field in self.PATH_FIELDS:
-            candidates = self._get_path_candidates(doc.get(field))
-            for candidate in candidates:
-                if self._is_image_path(candidate):
-                    self._path_cache[doc_id] = candidate
-                    return candidate
-
-        # filename/image_id에서 추출
-        for field in ('filename', 'image_id'):
-            val = doc.get(field)
-            if isinstance(val, str) and self._is_image_file(val):
-                resolved = self._resolve_path(val)
-                if resolved:
-                    self._path_cache[doc_id] = resolved
-                    return resolved
-        return None
-
-    def _get_path_candidates(self, value):
-        """값에서 경로 후보 추출"""
-        candidates = []
-        if isinstance(value, str) and value.strip():
-            candidates.append(value.strip())
-        elif isinstance(value, list):
-            candidates.extend([str(item).strip() for item in value if item])
-        elif isinstance(value, dict):
-            for key in ('path', 'file', 'url', 'image', 'src'):
-                if key in value and value[key]:
-                    candidates.append(str(value[key]).strip())
-        return candidates
-
-    def _is_image_path(self, path):
-        """경로가 유효한 이미지인지 확인"""
-        if not isinstance(path, str) or not path:
-            return False
-        if os.path.isabs(path) and os.path.exists(path):
-            return self._is_image_file(path)
-        resolved = self._resolve_path(path)
-        return resolved is not None
-
-    def _resolve_path(self, path):
-        """상대 경로 resolve"""
-        if os.path.isabs(path):
-            return path if os.path.exists(path) else None
-
-        search_dirs = [os.getcwd(), os.path.join(os.getcwd(), 'images'),
-                      os.path.join(os.getcwd(), 'data'), os.path.join(os.getcwd(), 'assets')]
-        basename = os.path.basename(path)
-        for search_dir in search_dirs:
-            candidate = os.path.join(search_dir, basename)
-            if os.path.exists(candidate) and self._is_image_file(candidate):
-                return candidate
-        return None
-
-    def _is_image_file(self, filename):
-        """이미지 파일인지 확인"""
-        if not isinstance(filename, str):
-            return False
-        basename = os.path.basename(filename).lower()
-        return any(basename.endswith(ext) for ext in ('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff'))
-
-    def _filter_paths_by_json_status(self, paths, filter_type):
-        """JSON 파일 상태에 따라 경로 필터링"""
-        print(f"[DEBUG] JSON 필터링 시작: {filter_type}")
-        filtered = []
-        requested_aliases = ['requested', '요청', '1차 검수 요청']
-        rejected_aliases = ['rejected', '반려']
-
-        for path in paths:
-            if self._check_json_status(path, filter_type, requested_aliases, rejected_aliases):
-                filtered.append(path)
-                print(f"[DEBUG] ✅ 필터 통과: {os.path.basename(path)}")
-            else:
-                print(f"[DEBUG] ❌ 필터 제외: {os.path.basename(path)}")
-
-        print(f"[DEBUG] JSON 필터링 후: {len(filtered)}개")
-        return filtered
-
-    def _check_json_status(self, img_path, filter_type, requested_aliases, rejected_aliases):
-        """JSON 파일에서 검수 상태 확인"""
-        try:
-            json_path = os.path.splitext(img_path)[0] + '.json'
-            if not os.path.exists(json_path):
-                return filter_type == '1차 검수 요청 전'
-
-            with open(json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            review_status = self._get_review_status_from_json(data)
-
-            if filter_type == '1차 검수 요청 전':
-                return not review_status or review_status in ['', None] or review_status not in requested_aliases + rejected_aliases
-            elif filter_type == '1차 검수 요청':
-                return review_status in requested_aliases
-            elif filter_type == '반려':
-                return review_status in rejected_aliases
-
-            return True
-        except Exception as e:
-            print(f"[DEBUG] JSON 상태 확인 오류: {e}")
-            return filter_type == '1차 검수 요청 전'
-
-    def _get_review_status_from_json(self, data):
-        """JSON 데이터에서 검수 상태 추출"""
-        # review_history 우선
-        if 'review_history' in data and isinstance(data['review_history'], list) and data['review_history']:
-            latest_review = data['review_history'][-1]
-            status = latest_review.get('status')
-            if status:
-                return status
-
-        # legacy 필드들
-        status = data.get('review_status') or data.get('reviewStatus')
-        if status:
-            return status
-
-        # nested review 객체
-        if 'review' in data and isinstance(data['review'], dict):
-            return data['review'].get('status')
-
-        return None
 
     def closeEvent(self, event):
         self.labeling_widget.closeEvent(event)
@@ -268,51 +115,107 @@ class MainWindow(QMainWindow):
     def setup_menu_bar(self):
         """메뉴바 설정 - DB 메뉴를 맨 오른쪽에 추가"""
         menubar = self.menuBar()
-
+        
+        # 스페이서를 추가하여 DB 메뉴를 오른쪽으로 밀어냄
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         spacer_action = QWidgetAction(self)
         spacer_action.setDefaultWidget(spacer)
         menubar.addAction(spacer_action)
 
+        # DB 메뉴를 마지막에 추가하여 맨 오른쪽에 위치시킴
         db_menu = menubar.addMenu('DB')
 
+        # DB 관리 액션 (내장 DBManagerDialog 열기)
         manage_action = QAction('데이터베이스 관리', self)
-        manage_action.setShortcut('Ctrl+D')
-        manage_action.triggered.connect(self.open_review_manager_with_check)
+        # Ctrl+D는 도형 복제 등 다른 기능과 충돌 가능성이 높아 Ctrl+Shift+D로 조정
+        manage_action.setShortcut('Ctrl+Shift+D')
+        manage_action.triggered.connect(self.open_db_manager_dialog)
         db_menu.addAction(manage_action)
-
+        
+        # 사진 보기 액션
         gallery_action = QAction('사진 보기', self)
         gallery_action.triggered.connect(self.show_image_gallery)
         db_menu.addAction(gallery_action)
-
+        
         db_menu.addSeparator()
 
+        # (선택) 개선된 검수 위젯 열기 - 실험적
+        improved_action = QAction('개선된 검수(실험적)', self)
+        improved_action.triggered.connect(self.open_review_manager_with_check)
+        db_menu.addAction(improved_action)
+
+        # 빠른 검색 액션
         search_action = QAction('빠른 검색', self)
         search_action.setShortcut('Ctrl+F')
         search_action.triggered.connect(self.search_db)
         db_menu.addAction(search_action)
-
+        
+        # 통계 보기 액션
         stats_action = QAction('통계 보기', self)
         stats_action.triggered.connect(self.show_db_stats)
         db_menu.addAction(stats_action)
-
+        
         db_menu.addSeparator()
-
+        
+        # 설정 액션
         settings_action = QAction('DB 설정', self)
         settings_action.triggered.connect(self.show_db_settings)
         db_menu.addAction(settings_action)
-
+        
+        # JSON → MongoDB 동기화 메뉴 추가
         db_menu.addSeparator()
         sync_action = QAction('JSON 동기화 상태', self)
         sync_action.triggered.connect(self.show_sync_status)
         db_menu.addAction(sync_action)
-
+        
         manual_sync_action = QAction('수동 동기화', self)
         manual_sync_action.triggered.connect(self.manual_sync_current_directory)
         db_menu.addAction(manual_sync_action)
 
     # -------------------- DB 검수 관리 --------------------
+    def open_db_manager_dialog(self):
+        """내장 DB 관리 다이얼로그를 연다."""
+        try:
+            storage = getattr(self, 'mongo_storage', None)
+            if not storage:
+                QMessageBox.warning(self, 'DB 관리', 'MongoDB 스토리지 핸들이 없습니다. 설정을 확인하세요.')
+                return
+            if not storage.test_connection():
+                QMessageBox.warning(self, 'DB 관리', 'MongoDB에 연결할 수 없습니다. DB 설정을 확인하세요.')
+                return
+
+            # 지연 임포트로 순환 참조/로딩 비용 최소화
+            from anylabeling.views.db_manager import DBManagerDialog
+
+            # 이미 떠 있다면 포커스만
+            if hasattr(self, 'db_manager_dialog') and self.db_manager_dialog is not None:
+                try:
+                    # 숨겨져 있으면 다시 보여주기
+                    if hasattr(self.db_manager_dialog, 'isVisible') and not self.db_manager_dialog.isVisible():
+                        self.db_manager_dialog.show()
+                    self.db_manager_dialog.raise_()
+                    self.db_manager_dialog.activateWindow()
+                    return
+                except Exception:
+                    # C++ 객체가 이미 파괴된 경우가 있으므로 참조 해제 후 재생성 경로로 진행
+                    try:
+                        self.db_manager_dialog = None
+                    except Exception:
+                        pass
+
+            self.db_manager_dialog = DBManagerDialog(storage, self)
+            # 모달이 필요 없도록 show, 필요 시 exec_()로 변경 가능
+            self.db_manager_dialog.show()
+            self.db_manager_dialog.raise_()
+            self.db_manager_dialog.activateWindow()
+            # 창이 닫히면 참조를 None으로 돌려 다음 호출 시 재생성되도록 함
+            try:
+                self.db_manager_dialog.destroyed.connect(lambda: setattr(self, 'db_manager_dialog', None))
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.critical(self, 'DB 관리 오류', f'DB 관리 창을 여는 중 오류가 발생했습니다:\n{str(e)}')
     def open_review_manager_with_check(self):
         """'데이터베이스 관리' 메뉴 클릭 시 호출됩니다. description 존재 여부를 확인하고 검수 창을 엽니다."""
         # 1) MongoDB에서 먼저 확인하고, 파일 경로를 찾아 열어준 뒤 리뷰 창을 연다
@@ -374,88 +277,161 @@ class MainWindow(QMainWindow):
             return ''
 
     def _open_from_mongo_if_description_present(self) -> bool:
-        """MongoDB에서 description이 있는 이미지를 찾아 로드"""
+        """MongoDB에서 현재 파일(이미지)의 어노테이션에 description이 있는지 먼저 확인하고,
+        DB에 저장된 파일 경로가 있으면 해당 파일을 열어준 뒤 리뷰 창을 연다.
+        Returns True if review was opened based on MongoDB; otherwise False.
+        """
         try:
-            storage = self.mongo_storage
-            if not storage or not storage.test_connection():
+            storage = getattr(self, 'mongo_storage', None)
+            if not storage:
+                return False
+            try:
+                if not storage.test_connection():
+                    return False
+            except Exception:
                 return False
 
             current_path = self._get_current_filename_safe()
-
             if not current_path:
-                # 현재 파일이 없으면 description이 있는 이미지 찾기
-                query = {"description": {"$exists": True, "$ne": ""}}
-                valid_paths = self.get_valid_image_paths_from_db(query, limit=1)
-                if valid_paths:
-                    self.load_file(valid_paths[0])
-                    self.open_review_manager()
-                    return True
-                QMessageBox.information(self, "DB 검수", "MongoDB에서 검수 가능한 이미지를 찾지 못했습니다.")
-                return False
+                # 현재 열린 파일이 없다면, DB에서 description이 있는 최신 항목을 찾아 해당 파일을 연다
+                db_any_path = self._find_any_image_path_with_description_in_db(storage)
+                if self._is_existing_path(db_any_path):
+                    try:
+                        self.load_file(db_any_path)
+                        self.open_review_manager()
+                        return True
+                    except Exception as e:
+                        QMessageBox.warning(self, "DB 검수", f"DB에서 찾은 파일을 여는 데 실패했습니다.\n경로: {db_any_path}\n오류: {e}")
+                        return False
+                else:
+                    QMessageBox.information(self, "DB 검수", "MongoDB에서 검수 가능한 이미지를 찾지 못했습니다.")
+                    return False
 
-            # 현재 파일의 description 확인
             image_id = os.path.basename(current_path)
+
+            # 어노테이션에 description이 존재하는지 확인 (image_id로 1차 확인)
             doc = storage.annotations.find_one({
-                "$or": [
-                    {"image_id": image_id},
-                    {"imagePath": os.path.abspath(current_path)},
-                    {"file_path": os.path.abspath(current_path)}
-                ],
+                "image_id": image_id,
                 "description": {"$exists": True, "$ne": ""}
             })
-
+            # image_id로 실패하면 경로 기반 보조 검색(imagePath, image_file_path, file_path 등)을 시도
+            if not doc:
+                or_queries = []
+                for field in ("imagePath", "image_file_path", "file_path", "path"):
+                    or_queries.append({field: osp.abspath(current_path)})
+                if or_queries:
+                    doc = storage.annotations.find_one({
+                        "$or": or_queries,
+                        "description": {"$exists": True, "$ne": ""}
+                    })
             if not doc:
                 QMessageBox.information(self, "DB 검수", "MongoDB에 해당 이미지의 description이 없어 검수 창을 열 수 없습니다.")
                 return False
+            # 이미지 컬렉션에서 파일 경로 확인: 통합 헬퍼 사용
+            db_file_path = self._resolve_image_path_in_db(storage, current_path, image_id)
 
-            # 현재 파일이 유효한지 확인
-            if os.path.exists(current_path):
+            # DB 경로가 있고 접근 가능하면 해당 파일을 연다. 아니면 현재 열린 파일 유지
+            target_path = db_file_path if self._is_existing_path(db_file_path) else (current_path if self._is_existing_path(current_path) else None)
+
+            if target_path:
+                try:
+                    # 현재 열려있는 파일과 다르면 로드
+                    if osp.abspath(target_path) != osp.abspath(current_path):
+                        self.load_file(target_path)
+                except Exception:
+                    # 파일 열기 실패 시에도 검수창은 열어주되, 메시지 안내
+                    QMessageBox.warning(self, "DB 검수", f"파일을 여는 데 실패했습니다. 경로: {target_path}")
+
+                # 최종적으로 검수 창 오픈
                 self.open_review_manager()
                 return True
-
-            # DB에서 유효한 경로 찾기
-            valid_paths = self.get_valid_image_paths_from_db({"image_id": image_id}, limit=1)
-            if valid_paths:
-                self.load_file(valid_paths[0])
-                self.open_review_manager()
-                return True
-
-            QMessageBox.information(self, "DB 검수", "MongoDB에 파일 경로 정보가 없거나 파일을 찾을 수 없습니다.")
-            return False
+            else:
+                QMessageBox.information(self, "DB 검수", "MongoDB에 파일 경로 정보가 없거나 파일을 찾을 수 없습니다.")
+                return False
 
         except Exception as e:
-            QMessageBox.critical(self, "DB 검수", f"MongoDB 확인 중 오류: {str(e)}")
+            QMessageBox.critical(self, "DB 검수", f"MongoDB 확인 중 오류가 발생했습니다:\n{str(e)}")
             return False
 
     def _find_any_image_path_with_description_in_db(self, storage) -> str:
-        """description이 있는 이미지의 경로를 찾음 (최적화 버전)"""
+        """현재 열린 파일이 없을 때, MongoDB에서 description이 존재하는 임의(가능하면 최신)의 항목을 찾아
+        해당 이미지의 실제 파일 경로를 반환한다. 없으면 빈 문자열.
+        우선순위: annotation 문서 내 경로 필드 → images 컬렉션의 경로 필드.
+        """
         try:
-            query = {"description": {"$exists": True, "$ne": ""}}
-            valid_paths = self.get_valid_image_paths_from_db(query, limit=1)
-            return valid_paths[0] if valid_paths else ""
+            # description이 있는 최신 어노테이션 조회 시도
+            doc = None
+            try:
+                doc = storage.annotations.find_one({
+                    "description": {"$exists": True, "$ne": ""}
+                }, sort=[("created_at", -1)])
+            except Exception:
+                doc = storage.annotations.find_one({
+                    "description": {"$exists": True, "$ne": ""}
+                })
+
+            if not doc:
+                return ''
+
+            # 1) 어노테이션 문서 자체에 경로 필드가 있을 경우 우선 사용
+            for key in ("image_file_path", "imagePath", "file_path", "path"):
+                val = doc.get(key)
+                if isinstance(val, str) and val and os.path.exists(val):
+                    return val
+
+            # 2) images 컬렉션에서 보조 조회
+            image_id = doc.get("image_id") or doc.get("filename")
+            if image_id:
+                img = storage.images.find_one({"image_id": image_id})
+                if not img and isinstance(image_id, str):
+                    # 혹시 image_id가 절대경로일 수 있으므로 경로 기반 조회도 시도
+                    abs_candidate = osp.abspath(image_id)
+                    for field in ("imagePath", "image_file_path", "file_path", "path"):
+                        found = storage.images.find_one({field: abs_candidate})
+                        if found:
+                            img = found
+                            break
+                if img:
+                    for key in ("image_file_path", "imagePath", "file_path", "path"):
+                        val = img.get(key)
+                        if isinstance(val, str) and val and os.path.exists(val):
+                            return val
+            return ''
         except Exception:
-            return ""
+            return ''
 
     def _resolve_image_path_in_db(self, storage, current_path: str, image_id: str = None) -> str:
-        """DB에서 이미지 경로를 resolve (최적화 버전)"""
+        """MongoDB(images)에서 다양한 필드(imagePath, image_file_path, file_path, path, filename)로
+        현재 파일과 매칭되는 문서를 찾아, 최적의 imagePath(절대 경로)를 반환합니다. 없으면 빈 문자열.
+        우선순위: image_file_path > imagePath > file_path > path > (filename과 current_path 디렉토리 조합은 생략)
+        """
         try:
-            query_conditions = {}
-            
+            abs_path = osp.abspath(current_path) if current_path else ''
+            candidates = []
+            # 1) image_id로 1차 조회
             if image_id:
-                query_conditions["image_id"] = image_id
-            
-            # 경로 기반 조건 추가
-            if current_path:
-                abs_path = os.path.abspath(current_path)
-                path_conditions = [{"field": abs_path} for field in self.PATH_FIELDS]
-                if path_conditions:
-                    query_conditions["$or"] = path_conditions
-            
-            valid_paths = self.get_valid_image_paths_from_db(query_conditions, limit=1)
-            return valid_paths[0] if valid_paths else ""
-            
+                img = storage.images.find_one({"image_id": image_id})
+                if img:
+                    candidates.append(img)
+
+            # 2) 경로 기반 조회 (인덱스가 있다면 빠르게 동작)
+            for field in ("imagePath", "image_file_path", "file_path", "path"):
+                try:
+                    doc = storage.images.find_one({field: abs_path})
+                    if doc:
+                        candidates.append(doc)
+                except Exception:
+                    continue
+
+            # 후보들에서 가장 적합한 경로 필드를 선택
+            for img in candidates:
+                for key in self._PATH_FIELDS:
+                    val = img.get(key)
+                    if isinstance(val, str) and val:
+                        return val
+            return ''
         except Exception:
-            return ""
+            return ''
 
     # 외부에서 현재 파일 기준의 imagePath를 얻고 싶을 때 사용할 수 있는 공개 헬퍼
     def get_current_image_path_from_db(self) -> str:
@@ -480,11 +456,18 @@ class MainWindow(QMainWindow):
         # 이미 열려 있으면 포커스만
         if self.review_window is not None:
             try:
+                # 숨겨져 있다면 다시 보여주기
+                if hasattr(self.review_window, 'isVisible') and not self.review_window.isVisible():
+                    self.review_window.show()
                 self.review_window.raise_()
                 self.review_window.activateWindow()
                 return
             except Exception:
-                pass
+                # 이미 파괴되었을 수 있으므로 참조를 초기화하고 재생성 경로로 진행
+                try:
+                    self.review_window = None
+                except Exception:
+                    pass
 
         # 레포 루트에서 improved_review_widgets.py 경로 계산
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -500,7 +483,14 @@ class MainWindow(QMainWindow):
                     if ReviewCls is None:
                         raise AttributeError("LabelMeReviewSearch 클래스가 없습니다")
                     self.review_window = ReviewCls()
+                    # 닫힌 뒤 두 번째 클릭에서도 열리도록 destroyed 시 참조 해제
+                    try:
+                        self.review_window.destroyed.connect(lambda: setattr(self, 'review_window', None))
+                    except Exception:
+                        pass
                     self.review_window.show()
+                    self.review_window.raise_()
+                    self.review_window.activateWindow()
                     return
             # 경로가 없거나 클래스 로드 실패 시 안내
             QMessageBox.information(
@@ -511,388 +501,315 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "검수 관리 오류", f"검수 관리 창을 여는 중 오류가 발생했습니다:\n{str(e)}")
 
-    def show_image_gallery(self):
-        """DB에서 description이 있는 이미지 목록을 가져와 갤러리 형태로 보여줍니다."""
+    def show_image_gallery(self, status_cond=None, use_json_status_filter=False):
+        """라벨미 검수 프로그램과 동일한 로직으로 DB에서 이미지를 찾아 갤러리 형태로 보여줍니다."""
         try:
             storage = getattr(self, 'mongo_storage', None)
-            if not storage or not storage.test_connection():
-                QMessageBox.warning(self, "DB 오류", "MongoDB에 연결할 수 없습니다.")
+            if not storage:
+                QMessageBox.critical(self, "오류", "데이터베이스에 연결할 수 없습니다.")
                 return
-
-            # --- 검수 상태 필터 선택 ---
-            filter_options = [
-                '전체 (description 있음)',
-                '1차 검수 요청 전',
-                '1차 검수 요청',
-                '반려',
-            ]
-            selected, ok = QInputDialog.getItem(
-                self,
-                '사진 보기 - 상태 선택',
-                '표시할 검수 상태를 선택하세요:',
-                filter_options,
-                0,
-                False,
-            )
-            if not ok:
-                return
-
-            # 상태별 쿼리 구성 (JSON 필터링에서 사용할 별칭 정의)
-            requested_aliases = ['requested', '요청', '1차 검수 요청']
-            rejected_aliases = ['rejected', '반려']
-            
-            status_cond = None
-            use_json_status_filter = False  # 기본값
-            json_status_filter_type = None
-            
-            if selected == '1차 검수 요청':
-                print(f"[DEBUG] 1차 검수 요청 선택됨 - JSON 파일 기반으로 검색")
-                use_json_status_filter = True
-                json_status_filter_type = '1차 검수 요청'
-            elif selected == '반려':
-                print(f"[DEBUG] 반려 선택됨 - JSON 파일 기반으로 검색")
-                use_json_status_filter = True
-                json_status_filter_type = '반려'
-            elif selected == '1차 검수 요청 전':
-                print(f"[DEBUG] 1차 검수 요청 전 선택됨 - JSON 파일 기반으로 직접 검색")
-                use_json_status_filter = True
-                json_status_filter_type = '1차 검수 요청 전'
-                print(f"[DEBUG] JSON 기반 상태 필터링 활성화: {json_status_filter_type}")
-            # '전체 (description 있음)' 선택 시에는 상태 필터링 없음
-
-            # JSON description 존재 조건 추가 (annotations 컬렉션에서 description이 있는 이미지)
-            def _get_image_ids_with_description():
-                """description이 있는 이미지들의 image_id 수집"""
-                try:
-                    storage = self.mongo_storage
-                    query = {"description": {"$exists": True, "$ne": ""}}
-                    docs = storage.annotations.find(query, {"image_id": 1, "filename": 1})
-
-                    image_ids = set()
-                    for doc in docs:
-                        candidates = []
-                        if doc.get('image_id'):
-                            candidates.append(str(doc['image_id']))
-                        if doc.get('filename'):
-                            candidates.append(os.path.splitext(os.path.basename(doc['filename']))[0])
-
-                        for candidate in candidates:
-                            if candidate and candidate.strip():
-                                image_ids.add(candidate.strip())
-
-                    return list(image_ids)
-                except Exception as e:
-                    print(f"[DEBUG] _get_image_ids_with_description 오류: {e}")
-                    return []
-            
-            annotated_image_ids = _get_image_ids_with_description()
-            if not annotated_image_ids:
-                QMessageBox.information(self, "사진 보기", "description이 있는 이미지를 찾을 수 없습니다.\n\n콘솔 출력을 확인하여 디버깅 정보를 확인하세요.")
-                return
-
-            # description 조건을 기존 쿼리에 추가
-            annotation_cond = {"image_id": {"$in": annotated_image_ids}}
-            
-            # 디버깅: images 컬렉션에 해당 image_id들이 실제로 있는지 확인
             try:
-                # 1) images 컬렉션의 전체 문서 수와 image_id 샘플
-                total_images = storage.images.count_documents({})
-                print(f"[DEBUG] 전체 images 문서 수: {total_images}")
+                if not storage.test_connection():
+                    QMessageBox.critical(self, "오류", "MongoDB 연결 테스트에 실패했습니다.")
+                    return
+            except Exception:
+                QMessageBox.critical(self, "오류", "MongoDB 연결 확인 중 오류가 발생했습니다.")
+                return
+
+            # 상태 선택 다이얼로그 - 라벨미 검수와 동일한 옵션
+            class StatusPicker(QDialog):
+                def __init__(self, parent=None):
+                    super().__init__(parent)
+                    self.setWindowTitle("사진 보기 - 상태 필터")
+                    self.setFixedSize(300, 150)
+                    layout = QVBoxLayout(self)
+                    
+                    row = QHBoxLayout()
+                    row.addWidget(QLabel("검수 상태:"))
+                    self.combo = QComboBox()
+                    self.combo.addItems([
+                        "전체",
+                        "1차 검수 요청 전", 
+                        "1차 검수 요청 후",
+                        "반려"
+                    ])
+                    row.addWidget(self.combo)
+                    layout.addLayout(row)
+
+                    btn_row = QHBoxLayout()
+                    self.view_btn = QPushButton("보기")
+                    self.close_btn = QPushButton("닫기")
+                    btn_row.addStretch(1)
+                    btn_row.addWidget(self.view_btn)
+                    btn_row.addWidget(self.close_btn)
+                    layout.addLayout(btn_row)
+
+                    self.close_btn.clicked.connect(self.reject)
+
+            def _get_effective_status_from_doc(doc):
+                """단순화된 상태 판별 로직 - JSON 파일도 함께 확인"""
+                # 디버그: 실제 데이터 구조 확인
+                image_path = doc.get('image_file_path', doc.get('imagePath', 'Unknown'))
+                print(f"\n[DEBUG] === 문서 분석: {image_path} ===")
                 
-                sample_images = list(storage.images.find({}, {"image_id": 1}).limit(5))
-                sample_image_ids = [doc.get('image_id') for doc in sample_images]
-                print(f"[DEBUG] 샘플 images의 image_id들: {sample_image_ids}")
+                review_history = doc.get('review_history', [])
+                print(f"  MongoDB review_history: {review_history}")
                 
-                # 2) annotations에서 찾은 image_id들이 실제로 images 컬렉션에 있는지 확인
-                matching_count = storage.images.count_documents(annotation_cond)
-                print(f"[DEBUG] annotations의 image_id가 images에서 매칭되는 수: {matching_count}")
-                
-                if matching_count == 0:
-                    print("[DEBUG] 매칭 문제 발생! annotations와 images 컬렉션의 image_id 형식이 다를 수 있습니다.")
-                    
-                    # 3) 대안: annotations에서 직접 경로 정보 수집 시도
-                    print("[DEBUG] annotations 컬렉션에서 직접 경로 수집을 시도합니다...")
-                    
-                    # annotations에서 description이 있으면서 경로 정보도 있는 문서들을 직접 사용
-                    extended_fields_for_ann = list(self._PATH_FIELDS) + ["filename", "image_id", "imagePath"]
-                    direct_ann_query = {
-                        "$and": [
-                            {"description": {"$exists": True, "$ne": ""}},
-                            {"$or": [{field: {"$exists": True, "$ne": ""}} for field in extended_fields_for_ann]}
-                        ]
-                    }
-                    
-                    direct_ann_count = storage.annotations.count_documents(direct_ann_query)
-                    print(f"[DEBUG] annotations에서 직접 경로+description 조건 만족하는 문서 수: {direct_ann_count}")
-                    
-                    if direct_ann_count > 0:
-                        print("[DEBUG] annotations 컬렉션을 직접 사용합니다.")
-                        # images 컬렉션 대신 annotations 컬렉션 직접 사용
-                        all_images = storage.annotations.find(direct_ann_query)
-                        using_annotations_directly = True
+                # MongoDB에 review_history가 없으면 JSON 파일에서 직접 읽기
+                if not review_history or review_history is None:
+                    print(f"  MongoDB에 review_history 없음, JSON 파일 확인 시도...")
+                    json_path = doc.get('json_file_path')
+                    if json_path and isinstance(json_path, str) and os.path.exists(json_path):
+                        try:
+                            with open(json_path, 'r', encoding='utf-8') as f:
+                                json_data = json.load(f)
+                                review_history = json_data.get('review_history', [])
+                                print(f"  JSON 파일에서 읽은 review_history: {review_history}")
+                        except Exception as e:
+                            print(f"  JSON 파일 읽기 실패: {e}")
+                            review_history = []
                     else:
-                        print("[DEBUG] annotations에서도 경로 정보를 찾을 수 없습니다.")
-                        using_annotations_directly = False
-                else:
-                    using_annotations_directly = False
+                        print(f"  JSON 파일 경로 없음 또는 파일 없음: {json_path}")
+                
+                # review_history 상태 판별
+                if isinstance(review_history, list) and review_history:
+                    last_entry = review_history[-1]
+                    print(f"  마지막 항목: {last_entry}")
                     
-            except Exception as e:
-                print(f"[DEBUG] images-annotations 매칭 확인 오류: {e}")
-                using_annotations_directly = False
+                    if isinstance(last_entry, dict):
+                        status = last_entry.get('status', '').strip()
+                        print(f"  최신 status: '{status}'")
+                        
+                        if status.lower() == 'requested':
+                            print(f"  → 1차 검수 요청 후")
+                            return '1차 검수 요청 후'
+                        elif status.lower() == 'rejected':
+                            print(f"  → 반려")
+                            return '반려'
+                        elif not status or status == '':
+                            print(f"  → 1차 검수 요청 전 (빈 상태)")
+                            return '1차 검수 요청 전'
+                        else:
+                            print(f"  → 알 수 없는 상태: '{status}' → 1차 검수 요청 전")
+                            return '1차 검수 요청 전'
+                    else:
+                        print(f"  마지막 항목이 dict가 아님: {type(last_entry)}")
+                else:
+                    print(f"  review_history가 없거나 비어있음")
+                
+                # MongoDB의 다른 상태 필드 확인
+                status = doc.get('review_status') or doc.get('reviewStatus')
+                if status:
+                    status_str = str(status).strip()
+                    print(f"  review_status: '{status_str}'")
+                    if status_str.lower() == 'requested':
+                        print(f"  → review_status에서 1차 검수 요청 후")
+                        return '1차 검수 요청 후'
+                    elif status_str.lower() == 'rejected':
+                        print(f"  → review_status에서 반려")
+                        return '반려'
+                    else:
+                        print(f"  → review_status 알 수 없는 상태: {status_str}")
+                        return '1차 검수 요청 전'
+                
+                # review.status (nested) 확인
+                review = doc.get('review', {})
+                if isinstance(review, dict):
+                    status = review.get('status')
+                    if status:
+                        status_str = str(status).strip()
+                        print(f"  review.status: '{status_str}'")
+                        if status_str.lower() == 'requested':
+                            print(f"  → review.status에서 1차 검수 요청 후")
+                            return '1차 검수 요청 후'
+                        elif status_str.lower() == 'rejected':
+                            print(f"  → review.status에서 반려")
+                            return '반려'
+                        else:
+                            print(f"  → review.status 알 수 없는 상태: {status_str}")
+                            return '1차 검수 요청 전'
+                
+                # 기본값
+                print(f"  → 모든 상태 필드 없음, 기본값: 1차 검수 요청 전")
+                return '1차 검수 요청 전'
 
-            # -------------------- 헬퍼: 경로 추출 --------------------
-            def _extract_path_candidates_from_value(v):
-                candidates = []
-                try:
-                    print(f"[DEBUG] _extract_path_candidates_from_value 호출됨, 값: {v} (타입: {type(v)})")
-                    if isinstance(v, str) and v.strip():
-                        candidates.append(v.strip())
-                        print(f"[DEBUG] 문자열에서 후보 추가: {v.strip()}")
-                    elif isinstance(v, list):
-                        for item in v:
-                            if isinstance(item, str) and item.strip():
-                                candidates.append(item.strip())
-                                print(f"[DEBUG] 리스트에서 후보 추가: {item.strip()}")
-                    elif isinstance(v, dict):
-                        # 흔한 키 우선 검색
-                        for k in ("path", "file", "url", "image", "src"):
-                            val = v.get(k)
-                            if isinstance(val, str) and val.strip():
-                                candidates.append(val.strip())
-                                print(f"[DEBUG] 딕셔너리 키 {k}에서 후보 추가: {val.strip()}")
-                                break
-                except Exception as e:
-                    print(f"[DEBUG] _extract_path_candidates_from_value 오류: {e}")
-                print(f"[DEBUG] 최종 후보들: {candidates}")
-                return candidates
+            def _normalize_status(status_value):
+                """상태값을 정규화 - 라벨미와 동일한 별칭 처리"""
+                if not status_value:
+                    return '1차 검수 요청 전'
+                
+                norm = str(status_value).strip().lower()
+                
+                # 요청 계열 (더 많은 변형 추가)
+                if norm in ['requested', 'request', '요청', '1차 검수 요청', '1차 검수 요청 후', 'pending', 'submitted']:
+                    return '1차 검수 요청 후'
+                
+                # 반려 계열 (더 많은 변형 추가)
+                if norm in ['rejected', 'reject', '반려', 'declined', 'denied', 'failed']:
+                    return '반려'
+                
+                # 완료 계열
+                if norm in ['completed', 'complete', '완료', '1차 검수 완료', 'done', 'finished']:
+                    return '1차 검수 완료'
+                
+                # 승인 계열
+                if norm in ['approved', 'approve', '승인', '최종 승인', 'accepted', 'passed']:
+                    return '최종 승인'
+                
+                # 알 수 없는 상태값도 로그에 남기기
+                print(f"[DEBUG] 알 수 없는 상태값: '{status_value}' (normalized: '{norm}')")
+                
+                # 기본값
+                return '1차 검수 요청 전'
 
-            def _extract_first_path(doc, fields):
-                print(f"[DEBUG] _extract_first_path 호출됨, 문서 ID: {doc.get('_id', 'N/A')}")
-                # 1) 우선순위 필드들 순회하며 문자열/리스트/딕셔너리에서 경로 후보를 추출
-                for field in fields:
-                    if field in doc:
-                        field_value = doc.get(field)
-                        print(f"[DEBUG] 필드 {field}: {field_value} (타입: {type(field_value)})")
-                        vals = _extract_path_candidates_from_value(field_value)
-                        print(f"[DEBUG] 필드 {field}에서 추출된 후보들: {vals}")
-                        if vals:
-                            return vals[0]
-                # 2) 마지막 시도: 파일명/ID가 이미지 파일명처럼 보이면 그대로 사용
-                for field in ("filename", "image_id", "imageId", "name"):
-                    val = doc.get(field)
-                    if isinstance(val, str) and any(val.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff")):
-                        print(f"[DEBUG] 이미지 확장자 필드 {field}에서 반환: {val}")
-                        return val
-                print(f"[DEBUG] 경로를 찾을 수 없음")
+            def _resolve_image_path(doc):
+                """라벨미 검수 위젯과 동일한 파일 경로 해석 로직"""
+                # 1순위: image_file_path (절대경로)
+                path = doc.get('image_file_path')
+                if path and isinstance(path, str) and os.path.exists(path):
+                    return path
+                
+                # 2순위: image_directory + image_file_name 조합
+                img_dir = doc.get('image_directory')
+                img_name = doc.get('image_file_name')
+                if img_dir and img_name:
+                    candidate = os.path.normpath(os.path.join(str(img_dir), str(img_name)))
+                    if os.path.exists(candidate):
+                        return candidate
+                
+                # 3순위: imagePath (절대경로)
+                path = doc.get('imagePath')
+                if path and isinstance(path, str):
+                    if os.path.isabs(path) and os.path.exists(path):
+                        return path
+                
+                # 4순위: imagePath (상대경로) + json_file_path 기준 재구성
+                json_path = (
+                    doc.get('json_file_path') or 
+                    doc.get('jsonPath') or 
+                    doc.get('annotation_path') or
+                    doc.get('json_path') or
+                    doc.get('jsonFile')
+                )
+                
+                if path and json_path and isinstance(json_path, str):
+                    if not os.path.isabs(path):
+                        candidate = os.path.normpath(os.path.join(os.path.dirname(json_path), path))
+                        if os.path.exists(candidate):
+                            return candidate
+                
+                # 5순위: json_file_path에서 확장자 변경으로 이미지 추정
+                if json_path and isinstance(json_path, str):
+                    base_path, _ = os.path.splitext(json_path)
+                    for ext in ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.tif']:
+                        potential_path = base_path + ext
+                        if os.path.exists(potential_path):
+                            return potential_path
                 return None
 
-            # DB에서 모든 이미지 경로 가져오기
-            image_paths = []
-            seen_paths = set()
-            
-            # 인덱스를 활용하여 경로/식별자 필드가 존재하는 문서만 조회
-            extended_fields = list(self._PATH_FIELDS) + ["filename", "image_id"]
-            path_filter = {"$or": [{field: {"$exists": True, "$ne": ""}} for field in extended_fields]}
-            
-            # 최종 쿼리 조합: 경로 필터 + JSON 어노테이션 필터 + 상태 필터
-            if not locals().get('using_annotations_directly', False):
-                # 기존 방식: images 컬렉션 사용
-                query_conditions = [path_filter, annotation_cond]
-                if status_cond:
-                    query_conditions.append(status_cond)
-                
-                final_query = {"$and": query_conditions}
-                print(f"[DEBUG] images 컬렉션 사용 - 최종 쿼리 조건 수: {len(query_conditions)}")
-                print(f"[DEBUG] 상태 필터 적용됨: {status_cond is not None}")
-                
-                all_images = storage.images.find(final_query)
-                
-                # 쿼리 결과 수 확인
+            def _get_filtered_image_paths(selected_status):
+                """선택된 상태에 따라 필터링된 이미지 경로 목록 반환"""
                 try:
-                    query_result_count = storage.images.count_documents(final_query)
-                    print(f"[DEBUG] images 컬렉션 최종 쿼리 결과 문서 수: {query_result_count}")
-                except Exception as e:
-                    print(f"[DEBUG] 쿼리 결과 수 확인 오류: {e}")
-            else:
-                # 대안: annotations 컬렉션에서 직접 사용 (이미 all_images가 설정됨)
-                print(f"[DEBUG] annotations 컬렉션 직접 사용")
-                try:
-                    # 상태 필터가 있다면 annotations에는 적용하지 않음 (images 컬렉션 전용)
-                    if status_cond:
-                        print(f"[DEBUG] 주의: 상태 필터는 annotations 컬렉션에서 무시됩니다")
-                except Exception:
-                    pass
-            
-            # 처리할 문서 수 미리 확인
-            doc_count = 0
-            all_images_list = list(all_images)  # 커서를 리스트로 변환
-            total_docs = len(all_images_list)
-            print(f"[DEBUG] 처리할 총 문서 수: {total_docs}")
-            
-            for doc_idx, doc in enumerate(all_images_list):
-                doc_count += 1
-                print(f"[DEBUG] === 문서 {doc_idx + 1}/{total_docs} 처리 중 ===")
-                print(f"[DEBUG] 문서 _id: {doc.get('_id', 'N/A')}")
-                print(f"[DEBUG] 문서 image_id: {doc.get('image_id', 'N/A')}")
-                
-                found_path_for_doc = _extract_first_path(doc, extended_fields)
-                print(f"[DEBUG] 문서에서 추출된 경로: {found_path_for_doc}")
-                
-                # 유효하고 실제 존재하며 아직 추가되지 않은 경로만 추가
-                if isinstance(found_path_for_doc, str) and found_path_for_doc:
-                    print(f"[DEBUG] 경로 유효성 확인: {found_path_for_doc}")
-                    if found_path_for_doc not in seen_paths:
-                        if os.path.exists(found_path_for_doc):
-                            print(f"[DEBUG] ✅ 파일 존재 확인됨, 추가: {found_path_for_doc}")
-                            image_paths.append(found_path_for_doc)
-                            seen_paths.add(found_path_for_doc)
-                        else:
-                            print(f"[DEBUG] ❌ 파일 존재하지 않음: {found_path_for_doc}")
-                            # 상대 경로나 다른 위치에 있을 가능성 체크
-                            import os.path as osp
-                            basename = osp.basename(found_path_for_doc)
-                            print(f"[DEBUG]    베이스명으로 재시도: {basename}")
-                            
-                            # 현재 작업 디렉토리와 일반적인 이미지 폴더들에서 찾아보기
-                            search_dirs = [
-                                os.getcwd(),
-                                osp.join(os.getcwd(), 'assets'),
-                                osp.join(os.getcwd(), 'assets', 'demo'),
-                                osp.join(os.getcwd(), 'images'),
-                                osp.join(os.getcwd(), 'data'),
-                            ]
-                            
-                            found_alternative = False
-                            for search_dir in search_dirs:
-                                alt_path = osp.join(search_dir, basename)
-                                if os.path.exists(alt_path):
-                                    print(f"[DEBUG] ✅ 대안 경로에서 발견: {alt_path}")
-                                    image_paths.append(alt_path)
-                                    seen_paths.add(alt_path)
-                                    found_alternative = True
-                                    break
-                            
-                            if not found_alternative:
-                                print(f"[DEBUG] ❌ 대안 경로에서도 찾지 못함")
-                    else:
-                        print(f"[DEBUG] 이미 추가된 경로 건너뜀: {found_path_for_doc}")
-                else:
-                    print(f"[DEBUG] ❌ 유효하지 않은 경로: {found_path_for_doc} (타입: {type(found_path_for_doc)})")
-                    # 문서의 모든 필드 확인
-                    doc_fields = list(doc.keys()) if hasattr(doc, 'keys') else 'N/A'
-                    print(f"[DEBUG] 문서 필드들: {doc_fields}")
-                    for field in extended_fields:
-                        if field in doc:
-                            val = doc.get(field)
-                            print(f"[DEBUG] {field}: {val} (타입: {type(val)})")
-            
-            print(f"[DEBUG] === 문서 처리 완료: {doc_count}개 처리됨 ===")
-            
-            print(f"[DEBUG] 최종 수집된 이미지 경로 수: {len(image_paths)}")
-            if image_paths:
-                print(f"[DEBUG] 수집된 경로들: {image_paths[:3]}...")  # 처음 3개만 표시
-            
-            # JSON 파일 기반 상태 필터링 적용
-            if locals().get('use_json_status_filter', False):
-                image_paths = self._filter_paths_by_json_status(image_paths, json_status_filter_type)
-            
-            # '전체' 선택 시에는 초기 결과가 있어도 동적 키 및 annotations 병합을 시도하여 더 많은 경로를 수집
-            if status_cond is None and selected == '전체 (description 있음)':
-                # 1차 우회: images 컬렉션의 샘플 문서에서 'path/file/url'이 포함된 키를 동적으로 추론하여 재시도
-                try:
-                    sample = storage.images.find_one({}) or {}
-                    dynamic_fields = [
-                        k for k in sample.keys()
-                        if isinstance(k, str) and any(p in k.lower() for p in ("path", "file", "url"))
-                    ]
-                    dynamic_fields = [f for f in dynamic_fields if f not in extended_fields]
-                    if dynamic_fields:
-                        dyn_query = {"$and": [
-                            {"$or": [{f: {"$exists": True, "$ne": ""}} for f in dynamic_fields]},
-                            annotation_cond
-                        ]}
-                        for doc in storage.images.find(dyn_query):
-                            found = _extract_first_path(doc, dynamic_fields)
-                            if (isinstance(found, str) and found and found not in seen_paths and 
-                                os.path.exists(found)):
-                                image_paths.append(found)
-                                seen_paths.add(found)
-                except Exception:
-                    pass
-
-            if status_cond is None and selected == '전체 (description 있음)':
-                # 2차 폴백: annotations 컬렉션에서 동일한 필드들로 수집 (일부 스키마는 경로가 annotations에만 존재)
-                try:
-                    ann_query = {
-                        "$and": [
-                            {"$or": [{field: {"$exists": True, "$ne": ""}} for field in extended_fields]},
-                            {"description": {"$exists": True, "$ne": ""}}
-                        ]
+                    print(f"[DEBUG] 상태 필터링 시작: {selected_status}")
+                    
+                    # shape-level description이 있는 문서들만 조회
+                    base_query = {
+                        "shapes": {
+                            "$elemMatch": {
+                                "description": {
+                                    "$exists": True,
+                                    "$ne": None,
+                                    "$ne": "",
+                                    "$type": "string",
+                                    "$regex": r"\S"
+                                }
+                            }
+                        }
                     }
-                    for doc in storage.annotations.find(ann_query):
-                        found = _extract_first_path(doc, extended_fields)
-                        if (isinstance(found, str) and found and found not in seen_paths and 
-                            os.path.exists(found)):
-                            image_paths.append(found)
-                            seen_paths.add(found)
-                except Exception:
-                    pass
+                    
+                    docs = list(storage.annotations.find(base_query))
+                    print(f"[DEBUG] shape-level description이 있는 문서 수: {len(docs)}")
+                    
+                    if not docs:
+                        return []
+                    
+                    # 각 문서의 상태를 판별하고 필터링
+                    filtered_docs = []
+                    status_counts = {}
+                    
+                    for doc in docs:
+                        # 라벨미와 동일한 상태 판별
+                        eff_status = _get_effective_status_from_doc(doc)
+                        status_counts[eff_status] = status_counts.get(eff_status, 0) + 1
+                        
+                        # 선택된 상태에 맞는지 확인
+                        if selected_status == "전체" or eff_status == selected_status:
+                            filtered_docs.append(doc)
+                    
+                    print(f"[DEBUG] 상태별 문서 수: {status_counts}")
+                    print(f"[DEBUG] '{selected_status}' 필터 적용 후 문서 수: {len(filtered_docs)}")
+                    
+                    # 각 문서에서 이미지 경로 추출
+                    image_paths = []
+                    path_resolution_stats = {'success': 0, 'failed': 0}
+                    
+                    for doc in filtered_docs:
+                        resolved_path = _resolve_image_path(doc)
+                        if resolved_path:
+                            image_paths.append(resolved_path)
+                            path_resolution_stats['success'] += 1
+                        else:
+                            path_resolution_stats['failed'] += 1
+                    
+                    print(f"[DEBUG] 경로 해석 통계: {path_resolution_stats}")
+                    print(f"[DEBUG] 최종 이미지 경로 수: {len(image_paths)}")
+                    
+                    if image_paths:
+                        print(f"[DEBUG] 샘플 경로: {image_paths[:3]}")
+                    
+                    return image_paths
+                    
+                except Exception as e:
+                    print(f"[DEBUG] _get_filtered_image_paths 오류: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    return []
 
-            # 상태 필터가 있는 경우, 결과 없음이면 명확하게 안내 후 종료
-            if not image_paths and status_cond is not None:
-                QMessageBox.information(self, "사진 보기", f"선택한 상태('{selected}')에 해당하는 이미지가 없습니다.\n다른 상태를 선택하거나 '전체'를 선택해 보세요.")
-                return
+            # 상태 선택 다이얼로그 표시
+            picker = StatusPicker(self)
 
-            if not image_paths:
-                # 진단 정보: 어떤 필드에 값이 있는 문서가 얼마나 있는지 보여줌
-                try:
-                    counts = {}
-                    for f in extended_fields:
-                        try:
-                            counts[f] = storage.images.count_documents({f: {"$exists": True, "$ne": ""}})
-                        except Exception:
-                            counts[f] = 0
-                    # 샘플 문서 키 목록
-                    sample = storage.images.find_one({}) or {}
-                    sample_keys = ", ".join(list(sample.keys())[:15]) if sample else "<none>"
-                    msg = (
-                        "DB에서 유효한 이미지 경로 문자열을 가진 문서를 찾지 못했습니다.\n\n"
-                        "필드별 문서 수 (exists & not empty):\n"
-                        f" - image_file_path: {counts.get('image_file_path', 0)}\n"
-                        f" - imagePath: {counts.get('imagePath', 0)}\n"
-                        f" - file_path: {counts.get('file_path', 0)}\n"
-                        f" - path: {counts.get('path', 0)}\n"
-                        f" - filename: {counts.get('filename', 0)}\n"
-                        f" - image_id: {counts.get('image_id', 0)}\n\n"
-                        f"샘플 문서 키: {sample_keys}\n"
-                        "힌트: images/annotations 컬렉션에서 경로 필드명이 다르면 해당 필드를 코드에 추가해야 합니다."
+            def open_gallery_for_current():
+                selected_status = picker.combo.currentText().strip()
+                print(f"[DEBUG] 선택된 상태: '{selected_status}'")
+                
+                # 상태에 따른 이미지 경로 가져오기
+                image_paths = _get_filtered_image_paths(selected_status)
+                
+                if not image_paths:
+                    QMessageBox.information(
+                        self, 
+                        "사진 보기", 
+                        f"선택한 상태에 해당하는 이미지가 없습니다.\n\n상태: {selected_status}\n\n※ shape-level description이 있는 이미지만 표시됩니다."
                     )
-                    QMessageBox.information(self, "사진 보기", msg)
-                except Exception:
-                    QMessageBox.information(self, "사진 보기", "DB에서 유효한 이미지 파일을 찾을 수 없습니다.")
-                return
+                    return
+                
+                # 갤러리 열기
+                gallery = ImageGallery(image_paths, parent=self)
+                try:
+                    gallery.imageSelected.connect(self.load_files_batch)
+                except Exception as e:
+                    print(f"[DEBUG] 갤러리 시그널 연결 오류: {e}")
+                
+                gallery.exec_()
 
-            # 갤러리 창 표시
-            if self.gallery_window is None:
-                self.gallery_window = ImageGallery(image_paths, self)
-                self.gallery_window.imageSelected.connect(self.load_files_batch)
-                self.gallery_window.finished.connect(self.on_gallery_closed)
-            else:
-                # 기존 갤러리가 있으면 새 경로 목록으로 업데이트
-                self.gallery_window.update_image_paths(image_paths)
-            # 선택한 필터를 제목에 표시
-            try:
-                title_suffix = selected if selected else '전체'
-                count_info = f" ({len(image_paths)}개)"
-                self.gallery_window.setWindowTitle(f"사진 보기 (DB) - {title_suffix}{count_info}")
-            except Exception:
-                pass
-            self.gallery_window.show()
-            self.gallery_window.raise_()
-            self.gallery_window.activateWindow()
+            picker.view_btn.clicked.connect(open_gallery_for_current)
+            picker.exec_()
 
         except Exception as e:
-            QMessageBox.critical(self, "사진 보기 오류", f"이미지 갤러리를 여는 중 오류가 발생했습니다:\n{str(e)}")
+            print(f"[ERROR] show_image_gallery 전체 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "오류", f"갤러리를 여는 중 오류가 발생했습니다:\n{str(e)}")
 
     def _get_inner_labeling_widget(self):
         """LabelingWrapper 내부의 실제 LabelingWidget(view)을 반환한다."""
@@ -1123,7 +1040,8 @@ class MainWindow(QMainWindow):
                     f'동기화할 디렉토리를 찾을 수 없습니다:\n{current_dir}'
                 )
                 return
-
+            
+            # 사용자 확인
             reply = QMessageBox.question(
                 self,
                 '수동 동기화 확인',
@@ -1139,6 +1057,7 @@ class MainWindow(QMainWindow):
             sync_service = getattr(self, '_json_mongodb_sync_service', None)
             
             if not sync_service:
+                # 임시 동기화 서비스 생성
                 from anylabeling.services.json_mongodb_sync import JSONMongoDBSyncService
                 sync_service = JSONMongoDBSyncService(self)
             
@@ -1223,6 +1142,8 @@ class MainWindow(QMainWindow):
     def load_file(self, filename=None):
         """파일 로딩을 labeling_widget에 위임하는 래퍼 함수"""
         if hasattr(self, 'labeling_widget') and self.labeling_widget:
+            # LabelingWrapper는 내부적으로 view 또는 widget 속성을 통해 LabelingWidget에 접근합니다.
+            # LabelingWidget 자체에 load_file이 있습니다.
             inner_widget = None
             for attr in ('view', 'widget', 'labeling_widget'):
                 if hasattr(self.labeling_widget, attr):
@@ -1235,5 +1156,6 @@ class MainWindow(QMainWindow):
             if hasattr(inner_widget, 'load_file'):
                 return inner_widget.load_file(filename)
         
+        # 폴백: 에러 메시지
         QMessageBox.warning(self, "파일 로딩 오류", "파일 로딩 기능을 찾을 수 없습니다.")
         return False

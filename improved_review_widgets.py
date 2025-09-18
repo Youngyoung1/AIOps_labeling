@@ -3,12 +3,13 @@ import sys
 import json
 import random
 import time
+import os
 from datetime import datetime, timedelta
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QPushButton, QTableWidget, QTableWidgetItem, 
                             QComboBox, QLineEdit, QLabel, QDateEdit, QGroupBox, 
                             QFormLayout, QHeaderView, QMessageBox, QProgressBar,
-                            QFrame, QSizePolicy, QSpacerItem, QTextEdit)
+                            QFrame, QSizePolicy, QSpacerItem, QTextEdit, QCheckBox)
 from PyQt5.QtCore import Qt, QDate, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QPalette, QColor, QPixmap, QIcon
 
@@ -40,6 +41,7 @@ class StatusBadgeWidget(QWidget):
         styles = {
             "1차 검수 요청 전": "background: #fef3c7; color: #d97706; border-radius: 12px; padding: 4px 12px; font-weight: bold; border: 2px solid #f59e0b;",
             "1차 검수 요청": "background: #dbeafe; color: #1d4ed8; border-radius: 12px; padding: 4px 12px; font-weight: bold; border: 2px solid #3b82f6;",
+            "반려": "background: #fee2e2; color: #dc2626; border-radius: 12px; padding: 4px 12px; font-weight: bold; border: 2px solid #ef4444;",
             "1차 검수 완료": "background: #d1fae5; color: #059669; border-radius: 12px; padding: 4px 12px; font-weight: bold; border: 2px solid #10b981;",
             "2차 검수 요청": "background: #e0e7ff; color: #4338ca; border-radius: 12px; padding: 4px 12px; font-weight: bold; border: 2px solid #6366f1;",
             "2차 검수 완료": "background: #dcfce7; color: #16a34a; border-radius: 12px; padding: 4px 12px; font-weight: bold; border: 2px solid #22c55e;",
@@ -350,6 +352,8 @@ class LabelMeReviewSearch(QMainWindow):
         self.sample_data = []
         self.filtered_data = []
         self.annotation_manager = None  # AnnotationManager 인스턴스
+        # JSON 상태 캐시: { json_path: (mtime, status_str) }
+        self._json_status_cache = {}
 
         # UI 먼저 띄우고, 이후 데이터 로드(초기 체감 반응 개선)
         self.setup_ui()
@@ -499,7 +503,7 @@ class LabelMeReviewSearch(QMainWindow):
         # 검수 상태 - 대기중 제거
         self.review_status_combo = QComboBox()
         self.review_status_combo.addItems([
-            "모든 상태", "1차 검수 요청 전", "1차 검수 요청", "1차 검수 완료", 
+            "모든 상태", "1차 검수 요청 전", "1차 검수 요청", "반려", "1차 검수 완료", 
             "2차 검수 요청", "2차 검수 완료"
         ])
         self.review_status_combo.currentTextChanged.connect(self.filter_data)
@@ -530,7 +534,7 @@ class LabelMeReviewSearch(QMainWindow):
         label_layout.addWidget(label_detail_btn)
         label_widget.setLayout(label_layout)
 
-        # 파일명
+    # 파일명
         self.filename_edit = QLineEdit()
         self.filename_edit.setPlaceholderText("파일명을 입력하세요 (예: 231012)")
         self.filename_edit.textChanged.connect(self.filter_data)
@@ -549,8 +553,15 @@ class LabelMeReviewSearch(QMainWindow):
         date_layout.addWidget(self.end_date)
         date_widget.setLayout(date_layout)
 
+        # JSON 상태 우선 토글 (기본: 켜짐)
+        self.json_status_first = QCheckBox("JSON 상태 우선")
+        self.json_status_first.setChecked(True)
+        self.json_status_first.setToolTip("JSON 파일(review_history/legacy 필드)의 상태를 우선 사용해 필터링/표시합니다.")
+        self.json_status_first.stateChanged.connect(self.filter_data)
+
         # 폼에 추가
         layout.addRow("검수 상태:", self.review_status_combo)
+        layout.addRow("상태 소스:", self.json_status_first)
         layout.addRow("객체 라벨:", label_widget)
         layout.addRow("파일명:", self.filename_edit)
         layout.addRow("생성 날짜:", date_widget)
@@ -657,6 +668,99 @@ class LabelMeReviewSearch(QMainWindow):
         table.itemDoubleClicked.connect(self.show_annotation_detail)
         
         return table
+
+    # -------------------- JSON 상태 판별 헬퍼 --------------------
+    def _read_status_from_json(self, item):
+        """주어진 어노테이션 항목에서 JSON 파일을 찾아 상태 문자열을 반환.
+        우선순위: review_history 최신 → review_status/ReviewStatus → review.status
+        매핑: 요청(request/requested/요청/1차 검수 요청)→ '1차 검수 요청', 반려(reject/rejected/반려) → '반려'.
+        없으면 None(=요청 전으로 취급).
+        캐시 사용(파일 mtime 기반).
+        """
+        try:
+            # 1) JSON 경로 결정
+            json_path = item.get('json_file_path') or ''
+            if not json_path:
+                # 이미지 경로에서 유추
+                base = (
+                    item.get('image_file_path')
+                    or item.get('imagePath')
+                    or item.get('image_file_name')
+                    or ''
+                )
+                if base:
+                    root, _ = os.path.splitext(str(base))
+                    json_path = root + '.json'
+
+            if not json_path or not os.path.exists(json_path):
+                return None
+
+            # 2) 캐시 확인
+            try:
+                mtime = os.path.getmtime(json_path)
+            except Exception:
+                mtime = None
+            cached = self._json_status_cache.get(json_path)
+            if cached and cached[0] == mtime:
+                return cached[1]
+
+            # 3) JSON 읽기
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            status = None
+            # review_history 최신 항목 우선
+            try:
+                rh = data.get('review_history')
+                if isinstance(rh, list) and rh:
+                    last = rh[-1]
+                    if isinstance(last, dict):
+                        status = last.get('status') or last.get('state')
+            except Exception:
+                pass
+
+            # legacy 필드들
+            if not status:
+                status = data.get('review_status') or data.get('reviewStatus')
+
+            # nested review 객체
+            if not status and isinstance(data.get('review'), dict):
+                status = data['review'].get('status')
+
+            # 정규화 매핑
+            norm = (str(status).strip().lower() if status is not None else None)
+            requested_aliases = {'requested', 'request', '요청', '1차 검수 요청'}
+            rejected_aliases = {'rejected', 'reject', '반려'}
+
+            mapped = None
+            if norm in requested_aliases:
+                mapped = '1차 검수 요청'
+            elif norm in rejected_aliases:
+                mapped = '반려'
+            else:
+                # 이미 한국어 정식 상태일 수 있음 → 그대로 사용
+                mapped = status if status else None
+
+            # 캐시 저장
+            self._json_status_cache[json_path] = (mtime, mapped)
+            return mapped
+        except Exception:
+            return None
+
+    def _get_effective_status(self, item):
+        """체크박스가 켜져 있으면 JSON에서 읽은 상태를 우선 적용하고, 없으면 DB 상태.
+        JSON에 상태가 전혀 없으면 '1차 검수 요청 전'으로 취급."""
+        try:
+            use_json = hasattr(self, 'json_status_first') and self.json_status_first.isChecked()
+        except Exception:
+            use_json = False
+
+        if use_json:
+            js = self._read_status_from_json(item)
+            if js is None or js == '':
+                return '1차 검수 요청 전'
+            return js
+        return item.get('review_status', '1차 검수 요청 전')
     
     def generate_labelme_data(self):
         """LabelMe 형식의 샘플 데이터 생성 - 대기중 제거"""
@@ -889,8 +993,9 @@ class LabelMeReviewSearch(QMainWindow):
             main_label = max(set(labels), key=labels.count) if labels else "없음"
             self.table.setItem(i, 1, QTableWidgetItem(main_label))
 
-            # 상태 배지
-            status_widget = StatusBadgeWidget(item.get('review_status', '1차 검수 요청 전'))
+            # 상태 배지 (JSON 우선 적용)
+            show_status = self._get_effective_status(item)
+            status_widget = StatusBadgeWidget(show_status)
             self.table.setCellWidget(i, 2, status_widget)
 
             # 생성일시 (안전한 처리)
@@ -938,11 +1043,14 @@ class LabelMeReviewSearch(QMainWindow):
 
         for item in self.sample_data:
             # 승인 완료 항목은 항상 숨김
-            if item.get('review_status', '') == '최종 승인':
+            # JSON 우선 모드일 경우, 효과적 상태 기준으로 판단
+            eff_status_for_exclude = self._get_effective_status(item)
+            if eff_status_for_exclude == '최종 승인' or item.get('review_status', '') == '최종 승인':
                 continue
             # 검수 상태 필터
-            if (self.review_status_combo.currentText() != "모든 상태" and 
-                item.get('review_status', '1차 검수 요청 전') != self.review_status_combo.currentText()):
+            current_status_filter = self.review_status_combo.currentText()
+            eff_status = self._get_effective_status(item)
+            if (current_status_filter != "모든 상태" and eff_status != current_status_filter):
                 continue
 
             # 라벨 필터

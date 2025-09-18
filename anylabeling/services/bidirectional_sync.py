@@ -63,7 +63,9 @@ class JSONFileHandler(FileSystemEventHandler):
 
 
 class BidirectionalSyncService(QObject):
-    IGNORE_PREFIX = os.path.abspath(r"C:\Users\pc\Desktop\202412이전\바탕화면\X-AnyLabeling-main")
+    # 기본적으로 무시할 경로를 비활성화(None)로 두어 프로젝트 내부의 JSON도 동기화되도록 함.
+    # 필요 시 앱 설정으로 이 값을 지정하면 그 경로 이하 파일은 동기화에서 제외됩니다.
+    IGNORE_PREFIX = None
     """양방향 JSON ↔ MongoDB 동기화 서비스"""
     
     # Qt 시그널
@@ -116,6 +118,24 @@ class BidirectionalSyncService(QObject):
             
     def add_watch_directory(self, directory: str):
         """감시할 디렉토리 추가"""
+        # Normalize path
+        try:
+            directory = os.path.abspath(directory)
+        except Exception:
+            pass
+
+        # Prevent watching the repository workspace or the package internals.
+        # If the directory is inside the project root (two levels up from this file), skip it.
+        try:
+            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+            # If directory is the repo root or inside it, do not add to watch list
+            if os.path.commonpath([directory, repo_root]) == repo_root:
+                logger.warning(f"감시 제외(리포지토리 내부): {directory}")
+                return
+        except Exception:
+            # If any error occurs during path check, fall back to normal behavior
+            pass
+
         if os.path.exists(directory) and directory not in self.watch_directories:
             self.watch_directories.append(directory)
             logger.info(f"📁 JSON 파일 감시 추가: {directory}")
@@ -215,7 +235,7 @@ class BidirectionalSyncService(QObject):
             # 순환 동기화 방지
             self.syncing_files.add(json_file_path)
             # 무시할 경로는 동기화하지 않음
-            if os.path.abspath(json_file_path).startswith(self.IGNORE_PREFIX):
+            if self.IGNORE_PREFIX and os.path.abspath(json_file_path).startswith(self.IGNORE_PREFIX):
                 logger.debug(f"동기화 제외(무시 경로): {json_file_path}")
                 return
             # 기존 JSON → MongoDB 동기화 로직
@@ -246,7 +266,7 @@ class BidirectionalSyncService(QObject):
             
     def _sync_mongodb_to_json(self, mongodb_doc: Dict[str, Any]):
         json_file_path = mongodb_doc.get('json_file_path', '')
-        if os.path.abspath(json_file_path).startswith(self.IGNORE_PREFIX):
+        if self.IGNORE_PREFIX and os.path.abspath(json_file_path).startswith(self.IGNORE_PREFIX):
             logger.debug(f"동기화 제외(무시 경로): {json_file_path}")
             return
         if not json_file_path or not os.path.exists(json_file_path):
@@ -305,7 +325,7 @@ class BidirectionalSyncService(QObject):
                 for file in files:
                     if file.endswith('.json'):
                         file_path = os.path.join(root, file)
-                        if os.path.abspath(file_path).startswith(self.IGNORE_PREFIX):
+                        if self.IGNORE_PREFIX and os.path.abspath(file_path).startswith(self.IGNORE_PREFIX):
                             logger.debug(f"manual_sync_all: 동기화 제외(무시 경로): {file_path}")
                             continue
                         if self._is_valid_annotation_json(file_path):
@@ -319,7 +339,7 @@ class BidirectionalSyncService(QObject):
         }))
         for doc in mongodb_docs:
             json_file_path = doc.get('json_file_path', '')
-            if os.path.abspath(json_file_path).startswith(self.IGNORE_PREFIX):
+            if self.IGNORE_PREFIX and os.path.abspath(json_file_path).startswith(self.IGNORE_PREFIX):
                 logger.debug(f"manual_sync_all: 동기화 제외(무시 경로): {json_file_path}")
                 continue
             self._sync_mongodb_to_json(doc)

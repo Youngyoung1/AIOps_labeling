@@ -9,6 +9,7 @@ import os
 import threading
 import time
 import json
+import sys
 from bson import ObjectId
 from anylabeling.services.app_instance_manager import (
     open_file_with_instance_manager,
@@ -319,38 +320,182 @@ class DBManagerDialog(QDialog):
             print(f"프로젝트 로드 오류: {e}")
     
     def load_images(self):
-        """이미지 데이터 로드"""
+        """description이 있는 어노테이션 기반 이미지 데이터 로드
+        동작:
+        - annotations 컬렉션에서 description이 있는 문서를 검색
+        - imagePath, image_file_path, file_path, filename 우선순위로 경로 추출
+        - 절대/상대 경로 보정(드라이브 문자, ..) 및 실제 파일 존재 확인
+        - 존재하는 파일만 테이블에 추가
+        """
         try:
-            # 모든 이미지 조회 (제한적으로)
-            images_cursor = self.mongo_storage.images.find().limit(100)
-            images = list(images_cursor)
-            # 현재 로드된 이미지 문서 캐시 (빠른 열기용)
-            self.image_docs = images
-            
-            self.image_table.setRowCount(len(images))
-            
-            for i, image in enumerate(images):
-                self.image_table.setItem(i, 0, QTableWidgetItem(image.get('filename', '')))
-                self.image_table.setItem(i, 1, QTableWidgetItem(image.get('status', '')))
-                self.image_table.setItem(i, 2, QTableWidgetItem(str(image.get('file_size', ''))))
-                self.image_table.setItem(i, 3, QTableWidgetItem(str(image.get('uploaded_at', ''))))
-                
-                # 어노테이션 개수 조회
-                ann_count = self.mongo_storage.annotations.count_documents({'image_id': image.get('image_id', '')})
-                self.image_table.setItem(i, 4, QTableWidgetItem(str(ann_count)))
-                
-                # 작업 버튼: 보기 → 빠른 뷰어 실행 (인스턴스/신규 프로세스)
+            # 로그 파일 준비
+            log_path = os.path.join(os.getcwd(), 'xanylabeling_db_manager_debug.log')
+            def _log(msg):
+                try:
+                    with open(log_path, 'a', encoding='utf-8') as lf:
+                        lf.write(f"{datetime.now().isoformat()} {msg}\n")
+                except Exception:
+                    pass
+                try:
+                    print(msg)
+                except Exception:
+                    pass
+
+            _log("[ENTRY] load_images 시작")
+
+            # shape-level description만 조회 (top-level description 제외)
+            # - null이 아니고 빈 문자열이 아닌 실제 내용이 있는 shape description만 대상
+            query = {
+                "shapes": {
+                    "$elemMatch": {
+                        "description": {
+                            "$exists": True,
+                            "$ne": None,
+                            "$ne": "",
+                            "$type": "string",
+                            "$regex": r"\\S"
+                        }
+                    }
+                }
+            }
+
+            ann_cursor = self.mongo_storage.annotations.find(query).limit(500)
+            ann_list = list(ann_cursor)
+
+            _log(f"[DEBUG] annotations에서 description이 있는 문서 수: {len(ann_list)}")
+
+            found_items = []
+
+            # 경로 보정 헬퍼
+            def _resolve_path(candidate):
+                try:
+                    if not candidate:
+                        return None
+                    candidate = str(candidate)
+                    # 이미 절대 경로인 경우
+                    if os.path.isabs(candidate) and os.path.exists(candidate):
+                        return os.path.normpath(candidate)
+
+                    # 상대 경로일 경우 작업 디렉토리 기준으로 체크
+                    alt = os.path.abspath(os.path.expanduser(candidate))
+                    if os.path.exists(alt):
+                        return os.path.normpath(alt)
+
+                    # 베이스명만 있는 경우 프로젝트/자주 쓰는 폴더에서 탐색
+                    base = os.path.basename(candidate)
+                    search_dirs = [
+                        os.getcwd(),
+                        os.path.join(os.getcwd(), 'assets'),
+                        os.path.join(os.getcwd(), 'assets', 'demo'),
+                        os.path.join(os.getcwd(), 'images'),
+                        os.path.join(os.path.expanduser('~'), 'Pictures'),
+                    ]
+                    for d in search_dirs:
+                        p = os.path.join(d, base)
+                        if os.path.exists(p):
+                            return os.path.normpath(p)
+
+                    # Windows 드라이브 문자 변환 시도 (예: C:\ vs c:\)
+                    if os.name == 'nt' and ':' in candidate:
+                        # normalize drive casing
+                        try:
+                            drive, tail = candidate.split(':', 1)
+                            alt_drive = drive.upper() + ':' + tail
+                            if os.path.exists(alt_drive):
+                                return os.path.normpath(alt_drive)
+                        except Exception:
+                            pass
+
+                    return None
+                except Exception as e:
+                    print(f"[DEBUG] _resolve_path 오류: {e}")
+                    return None
+
+            for ann in ann_list:
+                # 우선순위에 따른 후보 추출
+                candidates = [
+                    ann.get('imagePath'),
+                    ann.get('image_file_path'),
+                    ann.get('file_path'),
+                    ann.get('image_file_name'),
+                    ann.get('image_file'),
+                    ann.get('filename'),
+                    ann.get('image_file_name'),
+                    ann.get('image_file'),
+                ]
+
+                resolved = None
+                for c in candidates:
+                    if not c:
+                        continue
+                    r = _resolve_path(c)
+                    _log(f"[DEBUG] 후보: {c} -> 해석: {r}")
+                    if r:
+                        resolved = r
+                        break
+
+                if resolved:
+                    found_items.append((resolved, ann))
+                else:
+                    # 경로 정보가 전혀 없거나 못찾은 경우 json_file_path로도 시도
+                    jf = ann.get('json_file_path') or ann.get('json_path') or ann.get('jsonFile')
+                    if jf:
+                        # json 파일이 존재하면 그와 동일 디렉터리에서 이미지 파일을 찾아본다
+                        jp = _resolve_path(jf)
+                        if jp:
+                            dirp = os.path.dirname(jp)
+                            # 동일 basename에 jpg/png 등 시도
+                            base = ann.get('image_file_name') or ann.get('image_file') or ann.get('filename')
+                            if base:
+                                base_only = os.path.splitext(os.path.basename(base))[0]
+                                for ext in ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff'):
+                                    cand = os.path.join(dirp, base_only + ext)
+                                    if os.path.exists(cand):
+                                        found_items.append((os.path.normpath(cand), ann))
+                                        break
+
+            # 테이블에 추가
+            self.image_table.setRowCount(len(found_items))
+            self.image_docs = []
+            for i, (path, ann) in enumerate(found_items):
+                self.image_docs.append({'file_path': path, 'annotation': ann})
+                self.image_table.setItem(i, 0, QTableWidgetItem(os.path.basename(path)))
+                status = ann.get('review_status') or ann.get('status') or ""
+                self.image_table.setItem(i, 1, QTableWidgetItem(status))
+                self.image_table.setItem(i, 2, QTableWidgetItem(str(os.path.getsize(path) if os.path.exists(path) else '-')))
+                self.image_table.setItem(i, 3, QTableWidgetItem(str(ann.get('created_at', ''))))
+                # shape-level description 개수만 계산 (top-level 제외)
+                try:
+                    shapes = ann.get('shapes', []) or []
+                    # shape-level description 개수만 (null, 빈 문자열 제외)
+                    desc_count = sum(
+                        1 for s in shapes 
+                        if isinstance(s, dict) 
+                        and s.get('description') is not None
+                        and str(s.get('description', '')).strip()
+                    )
+                    
+                    # 최소 1개는 보장 (쿼리 조건을 만족했으므로)
+                    desc_count = max(1, desc_count)
+                except Exception:
+                    desc_count = 1
+                self.image_table.setItem(i, 4, QTableWidgetItem(str(desc_count)))
+
+                # '보기' 버튼: 기존 동작으로 이미지 뷰어 오픈
                 action_btn = QPushButton("보기")
-                # image_id 또는 file_path를 안전하게 캡처
-                image_id = image.get('image_id') or image.get('_id')
-                action_btn.clicked.connect(
-                    lambda checked=False, iid=image_id: self.open_image_in_viewer(iid)
-                )
+                image_id = ann.get('image_id') or ann.get('_id')
+                action_btn.clicked.connect(lambda checked=False, iid=image_id: self.open_image_in_viewer(iid))
                 self.image_table.setCellWidget(i, 5, action_btn)
-            
+
             self.image_table.resizeColumnsToContents()
-            
+            _log(f"[DEBUG] 최종 로드된 이미지 수: {len(found_items)}")
+            _log("[EXIT] load_images 종료")
         except Exception as e:
+            try:
+                with open(log_path, 'a', encoding='utf-8') as lf:
+                    lf.write(f"{datetime.now().isoformat()} [ERROR] 이미지 로드 오류: {e}\n")
+            except Exception:
+                pass
             print(f"이미지 로드 오류: {e}")
 
     def open_image_in_viewer(self, image_identifier):
@@ -392,11 +537,9 @@ class DBManagerDialog(QDialog):
                 if main_win is None:
                     return
                 try:
-                    # 상단에 [1/1] filename 형태로 표시
                     if hasattr(main_win, 'set_top_file_index_text'):
                         # 현재 인덱스와 전체 개수 계산
                         total = len(self.image_docs) if hasattr(self, 'image_docs') else 1
-                        # path에 해당하는 인덱스 찾기 (1-based)
                         current = 1
                         if hasattr(self, 'image_docs'):
                             for idx, img in enumerate(self.image_docs):
@@ -507,6 +650,75 @@ class DBManagerDialog(QDialog):
 
         thread = threading.Thread(target=_open_all, daemon=True)
         thread.start()
+
+    def show_description_dialog(self, annotation_doc, image_path):
+        """선택한 이미지의 shape-level description 목록을 보여주는 다이얼로그.
+        - annotation_doc: annotations 컬렉션의 문서(dict)
+        - image_path: 해석된 실제 이미지 경로(str)
+        """
+        try:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("설명(Description) 보기")
+            dlg.resize(700, 500)
+
+            vbox = QVBoxLayout(dlg)
+
+            # 상단: 파일명 및 경로
+            file_label = QLabel(os.path.basename(image_path) if image_path else "")
+            file_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+            path_label = QLabel(str(image_path))
+            path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            vbox.addWidget(file_label)
+            vbox.addWidget(path_label)
+
+            # 테이블: shape index, label, description(멀티라인), points 개수
+            table = QTableWidget()
+            shapes = annotation_doc.get('shapes', []) or []
+            rows = [s for s in shapes if isinstance(s, dict) and str(s.get('description', '')).strip()]
+            table.setColumnCount(4)
+            table.setHorizontalHeaderLabels(["#", "라벨", "설명", "포인트 수"])
+            table.setRowCount(len(rows))
+
+            for i, s in enumerate(rows):
+                idx_item = QTableWidgetItem(str(i))
+                label_item = QTableWidgetItem(str(s.get('label', '')))
+                desc_item = QTableWidgetItem(str(s.get('description', '')))
+                pts = s.get('points', []) or []
+                pts_item = QTableWidgetItem(str(len(pts)))
+
+                # 멀티라인 셀 설정
+                desc_item.setFlags(desc_item.flags() | Qt.ItemIsSelectable)
+                table.setItem(i, 0, idx_item)
+                table.setItem(i, 1, label_item)
+                table.setItem(i, 2, desc_item)
+                table.setItem(i, 3, pts_item)
+
+            table.resizeColumnsToContents()
+            vbox.addWidget(table)
+
+            # 하단 버튼들
+            hbox = QHBoxLayout()
+            open_btn = QPushButton("이미지 열기")
+
+            def _open():
+                # annotation 문서에서 image_id 또는 _id를 사용해 기존 로직으로 열기
+                image_id = annotation_doc.get('image_id') or annotation_doc.get('_id')
+                if not image_id:
+                    QMessageBox.warning(self, "오류", "이미지 식별자를 찾을 수 없습니다.")
+                    return
+                self.open_image_in_viewer(image_id)
+
+            open_btn.clicked.connect(_open)
+            close_btn = QPushButton("닫기")
+            close_btn.clicked.connect(dlg.accept)
+            hbox.addWidget(open_btn)
+            hbox.addStretch()
+            hbox.addWidget(close_btn)
+            vbox.addLayout(hbox)
+
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"설명 보기 중 오류: {e}")
     
     def load_annotations(self):
         """어노테이션 데이터 로드"""
@@ -600,7 +812,7 @@ class DBManagerDialog(QDialog):
             self.annotations_card.value_label.setText(str(stats.get('total_annotations', 0)))
             
             # 검수 상태별 통계 추가
-            review_stats = self.mongo_storage.collection_annotations.aggregate([
+            review_stats = self.mongo_storage.annotations.aggregate([
                 {
                     "$group": {
                         "_id": "$review_status",
@@ -1097,7 +1309,7 @@ class BatchOperationDialog(QDialog):
         """1차 검수 요청"""
         try:
             # 어노테이션 상태를 '1차 검수 요청'으로 변경
-            self.mongo_storage.collection_annotations.update_one(
+            self.mongo_storage.annotations.update_one(
                 {"_id": ObjectId(annotation_id)},
                 {
                     "$set": {
@@ -1116,7 +1328,7 @@ class BatchOperationDialog(QDialog):
         """1차 검수 완료"""
         try:
             # 어노테이션 상태를 '1차 검수 완료'로 변경
-            self.mongo_storage.collection_annotations.update_one(
+            self.mongo_storage.annotations.update_one(
                 {"_id": ObjectId(annotation_id)},
                 {
                     "$set": {
@@ -1135,7 +1347,7 @@ class BatchOperationDialog(QDialog):
         """2차 검수 요청"""
         try:
             # 어노테이션 상태를 '2차 검수 요청'으로 변경
-            self.mongo_storage.collection_annotations.update_one(
+            self.mongo_storage.annotations.update_one(
                 {"_id": ObjectId(annotation_id)},
                 {
                     "$set": {
@@ -1153,7 +1365,7 @@ class BatchOperationDialog(QDialog):
         """2차 검수 완료"""
         try:
             # 어노테이션 상태를 '2차 검수 완료'로 변경
-            self.mongo_storage.collection_annotations.update_one(
+            self.mongo_storage.annotations.update_one(
                 {"_id": ObjectId(annotation_id)},
                 {
                     "$set": {

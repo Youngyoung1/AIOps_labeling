@@ -162,3 +162,31 @@
 2025-09-18T16:32:44.049377 [DEBUG] annotations에서 description이 있는 문서 수: 0
 2025-09-18T16:32:44.050405 [DEBUG] 최종 로드된 이미지 수: 0
 2025-09-18T16:32:44.051371 [EXIT] load_images 종료
+2025-09-18T16:57:29.898797 [ENTRY] load_images 시작
+2025-09-18T16:57:29.900792 [DEBUG] annotations에서 description이 있는 문서 수: 0
+2025-09-18T16:57:29.901790 [DEBUG] 최종 로드된 이미지 수: 0
+2025-09-18T16:57:29.901790 [EXIT] load_images 종료
+2025-09-19T08:04:40.689306 [ENTRY] load_images 시작
+2025-09-19T08:04:40.690303 [DEBUG] annotations에서 description이 있는 문서 수: 0
+2025-09-19T08:04:40.691328 [DEBUG] 최종 로드된 이미지 수: 0
+2025-09-19T08:04:40.691328 [EXIT] load_images 종료
+2025-09-19T08:04:50.886000 [ENTRY] load_images 시작
+2025-09-19T08:04:50.886969 [DEBUG] annotations에서 description이 있는 문서 수: 0
+2025-09-19T08:04:50.887968 [DEBUG] 최종 로드된 이미지 수: 0
+2025-09-19T08:04:50.888964 [EXIT] load_images 종료
+2025-09-19T08:04:51.500528 [ENTRY] load_images 시작
+2025-09-19T08:04:51.502497 [DEBUG] annotations에서 description이 있는 문서 수: 0
+2025-09-19T08:04:51.503494 [DEBUG] 최종 로드된 이미지 수: 0
+2025-09-19T08:04:51.503494 [EXIT] load_images 종료
+2025-09-19T08:04:51.680814 [ENTRY] load_images 시작
+2025-09-19T08:04:51.681812 [DEBUG] annotations에서 description이 있는 문서 수: 0
+2025-09-19T08:04:51.682811 [DEBUG] 최종 로드된 이미지 수: 0
+2025-09-19T08:04:51.682811 [EXIT] load_images 종료
+2025-09-19T08:04:51.846484 [ENTRY] load_images 시작
+2025-09-19T08:04:51.847482 [DEBUG] annotations에서 description이 있는 문서 수: 0
+2025-09-19T08:04:51.848479 [DEBUG] 최종 로드된 이미지 수: 0
+2025-09-19T08:04:51.848479 [EXIT] load_images 종료
+2025-09-19T08:05:33.355888 [ENTRY] load_images 시작
+2025-09-19T08:05:33.356886 [DEBUG] annotations에서 description이 있는 문서 수: 0
+2025-09-19T08:05:33.357883 [DEBUG] 최종 로드된 이미지 수: 0
+2025-09-19T08:05:33.357883 [EXIT] load_images 종료

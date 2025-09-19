@@ -41,10 +41,5 @@ class LabelingWrapper(QWidget):
         main_layout.addWidget(self.view)
         self.setLayout(main_layout)
 
-    def set_file_list(self, file_list, start_index=0):
-        """내부 LabelingWidget(view)의 set_file_list를 호출하는 위임 메서드"""
-        if hasattr(self.view, 'set_file_list'):
-            self.view.set_file_list(file_list, start_index)
-
     def closeEvent(self, event):
         self.view.closeEvent(event)

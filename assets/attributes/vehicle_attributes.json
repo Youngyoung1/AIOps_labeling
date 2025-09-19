@@ -1,27 +1,28 @@
 {
-    "vehicle": {
-        "Color": [
-            "yellow",
-            "orange",
-            "green",
-            "gray",
-            "red",
-            "blue",
-            "white",
-            "golden",
-            "brown",
-            "black" 
-        ],
-        "Type": [
-            "sedan",
-            "suv",
-            "van",
-            "hatchback",
-            "mpv",
-            "pickup",
-            "bus",
-            "truck",
-            "estate"
-        ]
-    }
+  "vehicle": {
+    "Color": [
+      "yellow",
+      "orange",
+      "green",
+      "gray",
+      "red",
+      "blue",
+      "white",
+      "golden",
+      "brown",
+      "black"
+    ],
+    "Type": [
+      "sedan",
+      "suv",
+      "van",
+      "hatchback",
+      "mpv",
+      "pickup",
+      "bus",
+      "truck",
+      "estate"
+    ]
+  },
+  "flags": {}
 }

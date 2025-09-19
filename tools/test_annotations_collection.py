@@ -69,7 +69,7 @@ def test_direct_annotation_update():
             "label": "test_polling_sync",
             "points": [[50, 50], [150, 50], [150, 150], [50, 150]],
             "shape_type": "rectangle",
-            "description": "Polling sync test annotation",
+            # description은 annotation 레벨에 저장하지 않음 (shapes.description만 사용)
             "flags": {},
             "attributes": {},
             "created_at": datetime.now(),
@@ -146,8 +146,6 @@ def main():
         
         if test_annotation_id:
             print(f"\n✅ 테스트 준비 완료!")
-            print(f"이제 다음 명령으로 폴링 동기화를 테스트할 수 있습니다:")
-            print(f"python polling_sync_manager.py --test-sync \"231012_060304_0_side2.jpg\"")
             
             # 사용자 입력 대기
             input("\n테스트가 끝나면 Enter를 눌러 정리하세요...")

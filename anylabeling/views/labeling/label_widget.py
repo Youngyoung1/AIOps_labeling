@@ -3918,7 +3918,6 @@ class LabelingWidget(LabelDialog):
                         'area': self._calculate_area(shape.get('points', [])),
                         'difficult': shape.get('difficult', False),
                         'group_id': shape.get('group_id', None),
-                        'description': shape.get('description', ''),
                         'attributes': shape.get('attributes', {}),
                         'flags': shape.get('flags', {}),
                         'created_at': datetime.now(),
@@ -4718,24 +4717,30 @@ class LabelingWidget(LabelDialog):
             if json_path and osp.exists(json_path):
                 with open(json_path, 'r', encoding='utf-8') as f:
                     j = json.load(f)
-                # review_updated_at 최신 항목 우선 사용
-                rh = j.get('review_updated_at')
-                if isinstance(rh, list) and rh:
-                    last = rh[-1]
-                    if isinstance(last, dict):
-                        json_status = last.get('status', json_status)
-                        json_stage = last.get('stage', json_stage)
-                        json_reason = last.get('reject_reason', json_reason)
+                # 1순위: camelCase 필드 우선 사용 (reviewStatus/reviewStage/rejectReason)
+                if any(k in j for k in ("reviewStatus", "reviewStage", "rejectReason")):
+                    json_status = j.get("reviewStatus", json_status)
+                    json_stage = j.get("reviewStage", json_stage)
+                    json_reason = j.get("rejectReason", json_reason)
+                else:
+                    # 2순위: 히스토리의 최신 항목 사용
+                    rh = j.get("review_history")
+                    if isinstance(rh, list) and rh:
+                        last = rh[-1]
+                        if isinstance(last, dict):
+                            json_status = last.get("status", json_status) or last.get("reviewStatus", json_status)
+                            json_stage = last.get("stage", json_stage) or last.get("reviewStage", json_stage)
+                            json_reason = last.get("reject_reason", json_reason) or last.get("rejectReason", json_reason)
                 # 레거시 필드도 지원 (history 없을 때)
                 if json_status is None:
                     if isinstance(j.get('review'), dict):
                         r = j.get('review')
                         json_status = r.get('status', json_status)
                         json_stage = r.get('stage', json_stage)
-                        json_reason = r.get('reject_reason', json_reason)
-                    json_status = j.get('review_status', json_status)
-                    json_stage = j.get('review_stage', json_stage)
-                    json_reason = j.get('reject_reason', json_reason)
+                        json_reason = r.get('reject_Reason', json_reason)
+                    json_status = j.get('review_Status', json_status)
+                    json_stage = j.get('review_Stage', json_stage)
+                    json_reason = j.get('reject_Reason', json_reason)
         except Exception:
             # JSON 로드 실패는 무시하고 DB로 진행
             pass
@@ -4752,8 +4757,8 @@ class LabelingWidget(LabelDialog):
                         db_status = doc['review'].get('status', db_status)
                         db_stage = doc['review'].get('stage', db_stage)
                         db_reason = doc['review'].get('reject_reason', db_reason)
-                    db_status = doc.get('review_status', db_status)
-                    db_stage = doc.get('review_stage', db_stage)
+                    db_status = doc.get('review_Status', db_status)
+                    db_stage = doc.get('review_Stage', db_stage)
                     db_reason = doc.get('reject_reason', db_reason)
             except Exception:
                 pass
@@ -4868,36 +4873,18 @@ class LabelingWidget(LabelDialog):
                     try:
                         with open(json_path, 'r', encoding='utf-8') as f:
                             j = json.load(f)
-                        # 1) review_history가 이미 리스트로 존재할 때만 append (없으면 생성하지 않음)
+                        # 갱신 대신 insert: review_history 배열에 새로운 항목을 추가
                         entry = {
                             'status': status,
                             'stage': 1,
                             'reject_reason': reject_reason or '',
                             'updated_at': ts,
                         }
-                        history = j.get('review_history', None)
-                        if isinstance(history, list):
-                            history.append(entry)
-                            j['review_history'] = history
-
-                        # 2) 평탄 및 중첩 필드 항상 최신값으로 갱신 (camel/snake 병행 기록)
-                        j['review'] = j.get('review', {}) if isinstance(j.get('review'), dict) else {}
-                        j['review'].update({
-                            'status': status,
-                            'stage': 1,
-                            'reject_reason': reject_reason or '',
-                            'updated_at': ts,
-                        })
-                        # snake_case
-                        j['review_status'] = status
-                        j['review_stage'] = 1
-                        j['reject_reason'] = reject_reason or ''
-                        j['review_updated_at'] = ts
-                        # camelCase 병행
-                        j['reviewStatus'] = status
-                        j['reviewStage'] = 1
-                        j['rejectReason'] = reject_reason or ''
-
+                        history = j.get('review_history')
+                        if not isinstance(history, list):
+                            history = [history] if isinstance(history, dict) else ([] if history is None else [history])
+                        history.append(entry)
+                        j['review_history'] = history
                         with open(json_path, 'w', encoding='utf-8') as f:
                             json.dump(j, f, ensure_ascii=False, indent=2)
                     except Exception:
@@ -5534,7 +5521,7 @@ class LabelingWidget(LabelDialog):
             ):
                 continue
             base_no_ext = osp.splitext(file)[0]
-            label_file = base_no_ext + ".json"  # legacy (사용 안함)
+            label_file = base_no_ext + ".json" 
             yolo_file = base_no_ext + ".txt"
             item = QtWidgets.QListWidgetItem(file)
             # 체크 상태가 UI에 표시되려면 ItemIsUserCheckable 플래그가 필요
@@ -5568,7 +5555,7 @@ class LabelingWidget(LabelDialog):
             if pattern and pattern not in filename:
                 continue
             base_no_ext = osp.splitext(filename)[0]
-            label_file = base_no_ext + ".json"  # legacy
+            label_file = base_no_ext + ".json"  
             yolo_file = base_no_ext + ".txt"
             item = QtWidgets.QListWidgetItem(filename)
             # 체크박스 표시 위해 UserCheckable 추가 (디버그에서는 상태 존재하지만 UI에 안 보였던 원인)

@@ -1,5 +1,6 @@
 {
   "uri": "mongodb://localhost:27017/",
   "ok": true,
-  "error": ""
+  "error": "",
+  "flags": {}
 }

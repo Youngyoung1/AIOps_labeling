@@ -2,9 +2,7 @@ import logging
 import sys
 from functools import wraps
 from typing import Callable, Dict
-
 import termcolor
-
 
 COLORS: Dict[str, str] = {
     "WARNING": "yellow",
@@ -13,7 +11,6 @@ COLORS: Dict[str, str] = {
     "CRITICAL": "red",
     "ERROR": "red",
 }
-
 
 def singleton(cls):
     instances = {}
@@ -25,7 +22,6 @@ def singleton(cls):
         return instances[cls]
 
     return get_instance
-
 
 class ColoredFormatter(logging.Formatter):
     def __init__(self, fmt: str, use_color: bool = True):
@@ -55,7 +51,6 @@ class ColoredFormatter(logging.Formatter):
 
         return record
 
-
 @singleton
 class AppLogger:
     def __init__(self, name="X-AnyLabeling"):
@@ -76,6 +71,5 @@ class AppLogger:
 
     def set_level(self, level: str):
         self.logger.setLevel(level)
-
 
 logger = AppLogger()

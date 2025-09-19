@@ -80,7 +80,7 @@ def test_bidirectional_sync():
                 'label': 'original_label',
                 'points': [[100, 100], [200, 100], [200, 200], [100, 200]],
                 'shape_type': 'rectangle',
-                'description': 'Original annotation',
+                # description은 annotation 레벨에 저장하지 않음 (shapes.description만 사용)
                 'flags': {},
                 'attributes': {},
                 'created_at': datetime.now()

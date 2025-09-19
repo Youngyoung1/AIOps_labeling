@@ -663,10 +663,33 @@ class MongoStorage:
         try:
             stats = {}
             
-            # 기본 통계
-            stats['total_images'] = self.images.count_documents({})
-            stats['labeled_images'] = self.images.count_documents({"status": "completed"})
-            stats['total_annotations'] = self.annotations.count_documents({})
+            # Annotations 컬렉션에서 고유한 이미지 경로(imagePath)의 개수를 세어 총 이미지 수 계산
+            try:
+                # imagePath 필드가 존재하고 비어있지 않은 문서만 대상으로 함
+                distinct_images = self.annotations.distinct("imagePath", {"imagePath": {"$exists": True, "$ne": ""}})
+                stats['total_images'] = len(distinct_images)
+            except Exception:
+                stats['total_images'] = 0
+
+            # labeled_images는 기존 로직을 유지하거나, 별도 정의가 필요하면 수정 가능
+            # 여기서는 annotations이 있는 이미지는 모두 labeled 되었다고 가정
+            stats['labeled_images'] = stats['total_images']
+            
+            # 어노테이션의 shapes 개수를 합산하여 총 어노테이션 수 계산
+            try:
+                pipeline = [
+                    {"$match": {"shapes": {"$exists": True, "$ne": []}}},
+                    {
+                        "$group": {
+                            "_id": None,
+                            "total_shapes": {"$sum": {"$size": "$shapes"}}
+                        }
+                    }
+                ]
+                result = list(self.annotations.aggregate(pipeline))
+                stats['total_annotations'] = result[0]['total_shapes'] if result else 0
+            except Exception:
+                stats['total_annotations'] = 0
             
             # 진행률 계산
             if stats['total_images'] > 0:

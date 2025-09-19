@@ -18,10 +18,8 @@ from .label_converter import LabelConverter
 
 PIL.Image.MAX_IMAGE_PIXELS = None
 
-
 class LabelFileError(Exception):
     pass
-
 
 class LabelFile:
     suffix = ".json"

@@ -10,8 +10,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QComboBox, QLineEdit, QLabel, QDateEdit, QGroupBox, 
                             QFormLayout, QHeaderView, QMessageBox, QProgressBar,
                             QFrame, QSizePolicy, QSpacerItem, QTextEdit, QCheckBox)
-from PyQt5.QtCore import Qt, QDate, QTimer, pyqtSignal
-from PyQt5.QtGui import QFont, QPalette, QColor, QPixmap, QIcon
+from PyQt5.QtCore import Qt, QDate, QTimer, pyqtSignal, QPointF
+from PyQt5.QtGui import QFont, QPalette, QColor, QPixmap, QIcon, QPainter, QPen, QPolygonF
 
 # MongoDB AnnotationManager 연동
 try:

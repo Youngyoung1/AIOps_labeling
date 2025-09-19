@@ -6,9 +6,7 @@ import importlib.resources as pkg_resources
 from anylabeling import configs as anylabeling_configs
 from anylabeling.views.labeling.logger import logger
 
-
 current_config_file = None
-
 
 def update_dict(target_dict, new_dict, validate_item=None):
     for key, value in new_dict.items():
@@ -62,7 +60,6 @@ def validate_config_item(key, value):
         raise ValueError(
             f"Duplicates are detected for config key 'labels': {value}"
         )
-
 
 def get_config(
     config_file_or_yaml=None, config_from_args=None, show_msg=False

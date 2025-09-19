@@ -63,7 +63,7 @@ class JSONFileHandler(FileSystemEventHandler):
 
 
 class BidirectionalSyncService(QObject):
-    # 기본적으로 무시할 경로를 비활성화(None)로 두어 프로젝트 내부의 JSON도 동기화되도록 함.
+    # X-AnyLabeling 하위 폴더는 동기화에서 제외
     # 필요 시 앱 설정으로 이 값을 지정하면 그 경로 이하 파일은 동기화에서 제외됩니다.
     IGNORE_PREFIX = None
     """양방향 JSON ↔ MongoDB 동기화 서비스"""
@@ -74,6 +74,57 @@ class BidirectionalSyncService(QObject):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        
+        # IGNORE_PREFIX 기본값 설정
+        self.IGNORE_PREFIX = None
+        
+        # X-AnyLabeling 하위 폴더 동기화 제외 설정
+        try:
+            import os
+            # 현재 작업 디렉토리에서 X-AnyLabeling 폴더 찾기
+            cwd = os.getcwd()
+            # 기본 후보: 현재 작업 디렉토리 바로 아래의 X-AnyLabeling-main
+            workspace_path = os.path.join(cwd, "X-AnyLabeling-main")
+
+            # 현재 디렉토리에서 위로 올라가며 X-AnyLabeling-main 폴더 탐색
+            probe = os.path.abspath(cwd)
+            while True:
+                # 현재 노드가 바로 X-AnyLabeling-main 인가?
+                if os.path.basename(probe) == "X-AnyLabeling-main":
+                    workspace_path = probe
+                    break
+                # 현재 노드 하위에 있는가?
+                candidate = os.path.join(probe, "X-AnyLabeling-main")
+                if os.path.isdir(candidate):
+                    workspace_path = candidate
+                    break
+                parent = os.path.dirname(probe)
+                if parent == probe:
+                    break
+                probe = parent
+
+            # 파일 위치 기준으로도 한 번 더 탐색 (앱의 CWD와 파일 위치가 다를 수 있음)
+            if not os.path.isdir(workspace_path):
+                probe = os.path.dirname(os.path.abspath(__file__))
+                while True:
+                    if os.path.basename(probe) == "X-AnyLabeling-main":
+                        workspace_path = probe
+                        break
+                    candidate = os.path.join(probe, "X-AnyLabeling-main")
+                    if os.path.isdir(candidate):
+                        workspace_path = candidate
+                        break
+                    parent = os.path.dirname(probe)
+                    if parent == probe:
+                        break
+                    probe = parent
+            if os.path.exists(workspace_path):
+                self.IGNORE_PREFIX = os.path.abspath(workspace_path)
+                logger.info(f"🚫 X-AnyLabeling 폴더 동기화 제외: {self.IGNORE_PREFIX}")
+            else:
+                logger.warning(f"X-AnyLabeling 폴더를 찾을 수 없습니다: {workspace_path}")
+        except Exception as e:
+            logger.warning(f"X-AnyLabeling 폴더 경로 설정 실패: {e}")
         
         # MongoDB 연결
         self.annotation_manager = None
@@ -115,30 +166,6 @@ class BidirectionalSyncService(QObject):
         except Exception as e:
             logger.error(f"❌ MongoDB 연결 실패: {e}")
             return False
-            
-    def add_watch_directory(self, directory: str):
-        """감시할 디렉토리 추가"""
-        # Normalize path
-        try:
-            directory = os.path.abspath(directory)
-        except Exception:
-            pass
-
-        # Prevent watching the repository workspace or the package internals.
-        # If the directory is inside the project root (two levels up from this file), skip it.
-        try:
-            repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-            # If directory is the repo root or inside it, do not add to watch list
-            if os.path.commonpath([directory, repo_root]) == repo_root:
-                logger.warning(f"감시 제외(리포지토리 내부): {directory}")
-                return
-        except Exception:
-            # If any error occurs during path check, fall back to normal behavior
-            pass
-
-        if os.path.exists(directory) and directory not in self.watch_directories:
-            self.watch_directories.append(directory)
-            logger.info(f"📁 JSON 파일 감시 추가: {directory}")
             
     def start(self):
         """양방향 동기화 서비스 시작"""
@@ -206,22 +233,48 @@ class BidirectionalSyncService(QObject):
             docs = self.annotation_manager.collection.find({}, {
                 'json_file_path': 1,
                 'last_modified': 1,
+                'updated_at': 1,
                 'flags': 1,
                 '_id': 1
             })
             
             for doc in docs:
                 doc_id = str(doc['_id'])
-                current_modified = doc.get('last_modified', datetime.now())
-                json_file_path = doc.get('json_file_path', '')
+                # DB 문서의 기준 시각: updated_at 우선, 없으면 last_modified
+                current_modified = doc.get('updated_at') or doc.get('last_modified') or datetime.now()
+                json_file_path = doc.get('json_file_path')
                 
                 # 새 문서이거나 수정된 문서 확인
                 if (doc_id not in self.last_mongodb_check or 
                     current_modified > self.last_mongodb_check[doc_id]):
                     
-                    # 순환 동기화 방지
-                    if json_file_path not in self.syncing_files:
-                        self._sync_mongodb_to_json(doc)
+                    # JSON 우선 정책: 파일이 있고 파일이 더 최신이면 JSON→DB, 아니면 DB→JSON
+                    try:
+                        if json_file_path:
+                            abs_path = os.path.abspath(os.fspath(json_file_path))
+                        else:
+                            abs_path = None
+                    except Exception:
+                        abs_path = None
+
+                    json_is_newer = False
+                    if abs_path and os.path.exists(abs_path):
+                        try:
+                            file_mtime = datetime.fromtimestamp(os.path.getmtime(abs_path))
+                            # 1초 여유를 두고 비교
+                            if file_mtime > (current_modified or datetime.min):
+                                json_is_newer = True
+                        except Exception:
+                            pass
+
+                    if json_is_newer:
+                        # JSON이 최신이면 DB를 최신 상태로 반영
+                        if abs_path and abs_path not in self.syncing_files:
+                            self._sync_json_to_mongodb(abs_path)
+                    else:
+                        # 그 외에는 DB → JSON 반영 (단, 순환 방지)
+                        if abs_path not in self.syncing_files:
+                            self._sync_mongodb_to_json(doc)
                         
                     self.last_mongodb_check[doc_id] = current_modified
                     
@@ -265,28 +318,38 @@ class BidirectionalSyncService(QObject):
             threading.Timer(2.0, lambda: self.syncing_files.discard(json_file_path)).start()
             
     def _sync_mongodb_to_json(self, mongodb_doc: Dict[str, Any]):
-        json_file_path = mongodb_doc.get('json_file_path', '')
-        if self.IGNORE_PREFIX and os.path.abspath(json_file_path).startswith(self.IGNORE_PREFIX):
-            logger.debug(f"동기화 제외(무시 경로): {json_file_path}")
+        # MongoDB 문서에서 경로 추출 (None 대비)
+        json_file_path = mongodb_doc.get('json_file_path')
+        if not json_file_path:
+            logger.debug("MongoDB → JSON 동기화 건너뜀: json_file_path가 없음 또는 None")
             return
-        if not json_file_path or not os.path.exists(json_file_path):
+        try:
+            abs_path = os.path.abspath(os.fspath(json_file_path))
+        except Exception:
+            logger.debug(f"MongoDB → JSON 동기화 건너뜀: 잘못된 경로 형식 ({json_file_path!r})")
+            return
+        if self.IGNORE_PREFIX and abs_path.startswith(self.IGNORE_PREFIX):
+            logger.debug(f"동기화 제외(무시 경로): {abs_path}")
+            return
+        if not os.path.exists(abs_path):
+            logger.debug(f"MongoDB → JSON 동기화 건너뜀: 파일 없음 ({abs_path})")
             return
         try:
             # 순환 동기화 방지
-            self.syncing_files.add(json_file_path)
+            self.syncing_files.add(abs_path)
             # JSON 파일 읽기
-            with open(json_file_path, 'r', encoding='utf-8') as f:
+            with open(abs_path, 'r', encoding='utf-8') as f:
                 json_data = json.load(f)
             # MongoDB 데이터로 JSON 업데이트
             mongodb_flags = mongodb_doc.get('flags', {})
             json_data['flags'] = mongodb_flags
             # JSON 파일 쓰기
-            with open(json_file_path, 'w', encoding='utf-8') as f:
+            with open(abs_path, 'w', encoding='utf-8') as f:
                 json.dump(json_data, f, indent=2, ensure_ascii=False)
             self.stats['mongodb_to_json'] += 1
             self.stats['last_sync'] = datetime.now().strftime('%H:%M:%S')
-            logger.info(f"📥 MongoDB → JSON 동기화: {os.path.basename(json_file_path)}")
-            self.sync_completed.emit(json_file_path, True)
+            logger.info(f"📥 MongoDB → JSON 동기화: {os.path.basename(abs_path)}")
+            self.sync_completed.emit(abs_path, True)
             try:
                 self.stats_updated.emit(self.get_stats())
             except Exception:
@@ -294,10 +357,10 @@ class BidirectionalSyncService(QObject):
         except Exception as e:
             logger.error(f"❌ MongoDB → JSON 동기화 실패: {e}")
             self.stats['errors'] += 1
-            self.sync_completed.emit(json_file_path, False)
+            self.sync_completed.emit(abs_path if 'abs_path' in locals() else (json_file_path or ''), False)
         finally:
             # 잠시 후 동기화 잠금 해제
-            threading.Timer(2.0, lambda: self.syncing_files.discard(json_file_path)).start()
+            threading.Timer(2.0, lambda: self.syncing_files.discard(abs_path if 'abs_path' in locals() else (json_file_path or ''))).start()
             
     def _is_valid_annotation_json(self, file_path: str) -> bool:
         """유효한 annotation JSON 파일인지 확인"""
@@ -338,9 +401,15 @@ class BidirectionalSyncService(QObject):
             '_id': 1
         }))
         for doc in mongodb_docs:
-            json_file_path = doc.get('json_file_path', '')
-            if self.IGNORE_PREFIX and os.path.abspath(json_file_path).startswith(self.IGNORE_PREFIX):
-                logger.debug(f"manual_sync_all: 동기화 제외(무시 경로): {json_file_path}")
+            json_file_path = doc.get('json_file_path')
+            if not json_file_path:
+                continue
+            try:
+                abs_path = os.path.abspath(os.fspath(json_file_path))
+            except Exception:
+                continue
+            if self.IGNORE_PREFIX and abs_path.startswith(self.IGNORE_PREFIX):
+                logger.debug(f"manual_sync_all: 동기화 제외(무시 경로): {abs_path}")
                 continue
             self._sync_mongodb_to_json(doc)
         logger.info(f"✅ 수동 전체 동기화 완료: JSON {json_count}개, MongoDB {len(mongodb_docs)}개")
@@ -356,3 +425,41 @@ class BidirectionalSyncService(QObject):
             self.polling_timer.stop()
             self.polling_timer.start(self.polling_interval)
         logger.info(f"⏰ MongoDB 폴링 간격 변경: {interval_ms/1000}초")
+
+    # --- 추가 메서드: 감시 폴더 등록 ---
+    def add_watch_directory(self, directory: str):
+        """동기화 감시 대상 폴더 추가"""
+        try:
+            if not directory:
+                return False
+            directory = os.path.abspath(os.fspath(directory))
+            if not os.path.isdir(directory):
+                logger.debug(f"감시 폴더 추가 실패 (존재하지 않음): {directory}")
+                return False
+            if directory in self.watch_directories:
+                return True
+            self.watch_directories.append(directory)
+            try:
+                # 서비스가 이미 시작되었으면 즉시 감시 스케줄링
+                if getattr(self.observer, 'is_alive', lambda: False)():
+                    self.observer.schedule(self.file_handler, directory, recursive=True)
+                    logger.info(f"📁 실시간 감시 추가: {directory}")
+            except Exception as e:
+                logger.debug(f"감시 스케줄 등록 실패: {e}")
+            return True
+        except Exception as e:
+            logger.debug(f"감시 폴더 추가 중 예외: {e}")
+            return False
+
+    # --- 공개 메서드: 외부에서 단건 JSON→DB 요청 시 사용 ---
+    def sync_json_to_mongodb(self, json_file_path: str) -> bool:
+        try:
+            self._sync_json_to_mongodb(json_file_path)
+            return True
+        except Exception as e:
+            logger.debug(f"sync_json_to_mongodb 호출 실패: {e}")
+            return False
+
+    # --- 과거 호출 호환용 별칭 ---
+    def sync_json_to_mongo(self, json_file_path: str) -> bool:
+        return self.sync_json_to_mongodb(json_file_path)

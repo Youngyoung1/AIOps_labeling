@@ -119,7 +119,7 @@ def main():
 
     # Run event loop briefly to let queued save run (save does DB IO)
     # Quit after 2500ms (give more time for file IO and DB insert)
-    QtCore.QTimer.singleShot(2500, app.quit)
+    QtCore.QTimer.singleShot(1500, app.quit)
     app.exec_()
 
     # Now verify DB

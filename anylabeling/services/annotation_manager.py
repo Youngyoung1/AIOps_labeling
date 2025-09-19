@@ -56,8 +56,21 @@ class AnnotationManager:
             self.collection.create_index("shapes.label")
             self.collection.create_index([("imagePath", 1), ("labels", 1)])
 
-            # 설명 검색용 text 인덱스
-            self.collection.create_index([("description", "text"), ("shapes.description", "text")])
+            # 설명 검색용 text 인덱스 (컬렉션당 하나만 허용)
+            try:
+                existing_text = None
+                for idx in self.collection.list_indexes():
+                    key_spec = idx.get('key') or idx.get('keyPattern') or {}
+                    if 'text' in str(key_spec):
+                        existing_text = idx
+                        break
+                if existing_text:
+                    logger.info(f"텍스트 인덱스 이미 존재: {existing_text.get('name', '<unnamed>')}, 건너뜀")
+                else:
+                    # shapes.description만 사용하여 일관성 유지
+                    self.collection.create_index([("shapes.description", "text")])
+            except Exception as te:
+                logger.warning(f"텍스트 인덱스 생성/확인 중 에러: {te}")
 
             # 📊 어노테이션 최적화 인덱스
             self.collection.create_index("shape_types")
@@ -83,7 +96,7 @@ class AnnotationManager:
             self.collection.create_index([("labels", 1), ("shape_count", -1)])
             self.collection.create_index([("json_directory", 1), ("json_file_name", 1)])
 
-            logger.info("MongoDB 인덱스 생성 완료")
+            logger.info("MongoDB 인덱스 생성 완료 (텍스트 인덱스는 최대 1개)")
         except Exception as e:
             logger.warning(f"인덱스 생성 중 에러: {e}")
 
@@ -194,14 +207,14 @@ class AnnotationManager:
             # 검색 최적화용 필드
             features = self._extract_annotation_features(json_data)
 
-            # MongoDB 문서
+            # MongoDB 문서 (annotation.description 제외하여 일관성 유지)
             document = {
                 "version": json_data.get("version"),
                 "flags": json_data.get("flags", {}),
                 "shapes": json_data.get("shapes", []),
                 "imagePath": json_data.get("imagePath"),
                 "imageData": json_data.get("imageData"),
-                "description": json_data.get("description", ""),
+                # description 필드 제거 - shapes.description만 사용
 
                 **path_info,
                 "annotation": json_data,
@@ -389,14 +402,14 @@ class AnnotationManager:
             # 새로운 특성들 추출
             features = self._extract_annotation_features(updated_data)
             
-            # 업데이트할 필드들
+            # 업데이트할 필드들 (description 제외하여 일관성 유지)
             update_fields = {
                 # 원본 데이터 필드들
                 "version": updated_data.get("version"),
                 "flags": updated_data.get("flags", {}),
                 "shapes": updated_data.get("shapes", []),
                 "imageData": updated_data.get("imageData"),
-                "description": updated_data.get("description", ""),
+                # description 필드 제거 - shapes.description만 사용
                 
                 # 원본 JSON 전체 보존
                 "annotation": updated_data,

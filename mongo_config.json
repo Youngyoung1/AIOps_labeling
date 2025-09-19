@@ -1,4 +1,5 @@
 {
-    "connection_string": "mongodb://localhost:27017",
-    "db_name": "labeling_db"
+  "connection_string": "mongodb://localhost:27017",
+  "db_name": "labeling_db",
+  "flags": {}
 }

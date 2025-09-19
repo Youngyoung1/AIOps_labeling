@@ -334,8 +334,7 @@ def main():
         print(f"🎯 타겟 문서: {target_object_id}")
         print(f"=" * 60)
         
-        # 1. 문서 업데이트
-        success = updater.update_specific_document(target_object_id)
+        # 1. 문서 업데이트        success = updater.update_specific_document(target_object_id)
         
         if success:
             # 2. 인덱스 재생성

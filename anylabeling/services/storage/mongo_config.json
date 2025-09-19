@@ -12,5 +12,6 @@
   },
   "limits": {
     "aggregation_limit": 1000
-  }
+  },
+  "flags": {}
 }

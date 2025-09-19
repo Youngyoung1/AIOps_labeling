@@ -1232,7 +1232,6 @@ class LabelDialog(QtWidgets.QDialog):
             "어두움": QtWidgets.QCheckBox("어두움"),
             "기타": QtWidgets.QCheckBox("기타"),
         }
-        
         # All checkboxes start unchecked by default
         
         # Add radio buttons to button group

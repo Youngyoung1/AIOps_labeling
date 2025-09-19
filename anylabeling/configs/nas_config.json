@@ -1,9 +1,16 @@
 {
   "network_storage": {
     "nas_paths": {
-      "local_test": "C:\\Users\\pc\\Desktop\\인턴\\SKPoC\\Unclear_file"
+
     },
-    "supported_formats": [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"],
+    "supported_formats": [
+      ".jpg",
+      ".jpeg",
+      ".png",
+      ".bmp",
+      ".tiff",
+      ".webp"
+    ],
     "scan_settings": {
       "max_files_per_scan": 1000,
       "recursive_scan": true,
@@ -18,8 +25,9 @@
     },
     "collections": {
       "images": "images",
-      "annotations": "annotations", 
+      "annotations": "annotations",
       "projects": "projects"
     }
-  }
+  },
+  "flags": {}
 }

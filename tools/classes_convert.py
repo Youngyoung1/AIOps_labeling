@@ -16,7 +16,6 @@ if str(ROOT) not in sys.path:
 
 from anylabeling.utils.classes import convert_txt_to_json  # noqa: E402
 
-
 def main():
     ap = argparse.ArgumentParser(description="Convert classes.txt to classes.json")
     ap.add_argument("--txt", required=True, help="classes.txt 경로")

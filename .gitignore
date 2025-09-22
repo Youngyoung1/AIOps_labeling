@@ -16,3 +16,45 @@ anylabeling/data
 anylabeling/app_info.py-*
 zipped_models/*
 venv/
+
+# 환경 설정 파일 (민감한 정보 포함)
+.env
+.env.local
+.env.dev
+.env.development
+.env.prod
+.env.production
+.env.test
+.env.testing
+
+# MongoDB 설정 백업 파일
+*.cfg.backup.*
+
+# 로그 파일
+*.log
+logs/
+
+# 백업 파일
+backups/
+*.backup
+*.bak
+
+# 임시 파일
+temp/
+tmp/
+*.tmp
+
+# 인증서 및 키 파일
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# 설정 덤프 파일
+config_dump.json
+settings_export.json
+
+# docs: ignore Markdown files in docs/ (including subfolders)
+docs/*.md
+docs/**/*.md

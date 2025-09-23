@@ -1,0 +1,122 @@
+@startuml X-AnyLabeling_Local_YOLO_Pipeline
+title X-AnyLabeling - Local YOLO Pipeline (Data & Classes)
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam linetype ortho
+
+package "MongoDB (document model)" {
+  class AnnotationDoc {
+    + _id : ObjectId
+    + imagePath : string
+    + image_file_path : string [opt]
+    + image_directory : string [opt]
+    + image_file_name : string [opt]
+    + imageWidth : int
+    + imageHeight : int
+    + description : string [opt]
+    + flags : object [opt]
+    + shapes : Shape[]
+  }
+
+  class Shape {
+    + label : string
+    + points : (float,float)[]
+    + score : float [opt]
+    + group_id : string [opt]
+    + description : string [opt]
+    + shape_type : string = "rectangle"
+  }
+}
+
+package "Local Dataset (YOLO)" {
+  class LocalDatasetConfig {
+    + output_directory : string
+    + dataset_name : string
+    + create_subfolders : bool = true
+    + copy_images : bool = true
+  }
+
+  class LocalDatasetManager {
+    - config : LocalDatasetConfig
+    - dataset_path : Path
+    + test_connection() : bool
+    + create_dataset_structure() : Dict
+    + save_dataset_info(info: Dict) : bool
+    + get_output_path() : str
+  }
+
+  class DatasetManager {
+    - client : LocalDatasetManager
+    + prepare_dataset_from_mongodb(mongo, query: Dict) : Dict
+    + create_local_yolo_dataset(info: Dict, train: float, val: float, test: float) : bool
+    -- internal --
+    - _resolve_image_path(doc: Dict) : str
+    - _create_data_yaml(path: Path, classes: string[], train: float, val: float, test: float)
+    - _process_single_file(file: Dict, imgDir: Path, lblDir: Path, classes: string[]) : bool
+    - _convert_shape_to_yolo(shape: Dict, meta: Dict, classes: string[]) : string
+  }
+
+  class PipelineConfig {
+    + dataset_name : string
+    + output_directory : string
+    + description : string
+    + train_ratio : float = 0.7
+    + val_ratio : float = 0.2
+    + test_ratio : float = 0.1
+    + copy_images : bool = true
+    + create_subfolders : bool = true
+  }
+
+  enum PipelineStatus {
+    idle
+    preparing
+    converting
+    completed
+    error
+  }
+
+  class PipelineAutomation {
+    - client : LocalDatasetManager
+    - dataset_manager : DatasetManager
+    - status : PipelineStatus
+    - progress : int
+    + set_status_callback(cb)
+    + run_full_pipeline(mongo, cfg: PipelineConfig, query: Dict) : bool
+    + get_pipeline_status() : Dict
+    + get_output_directory() : str
+  }
+}
+
+AnnotationDoc "1" o-- "*" Shape : shapes
+PipelineAutomation --> LocalDatasetManager
+PipelineAutomation --> DatasetManager
+PipelineAutomation --> PipelineConfig
+DatasetManager --> LocalDatasetManager
+LocalDatasetManager --> LocalDatasetConfig
+
+note right of DatasetManager
+prepare_dataset_from_mongodb() 결과 스키마 예:
+{
+  total_images: int,
+  annotations: int,
+  classes: Set[str],
+  files: [
+    { image_path: str,
+      shapes: Shape[],
+      metadata: { width:int, height:int, image_id:any }
+    }
+  ]
+}
+end note
+
+note bottom
+YOLO 산출물 구조:
+<output>/<dataset_name>/
+  - data.yaml (nc, names, train/val/test 경로)
+  - classes.txt
+  - images/{train,val,test}/
+  - labels/{train,val,test}/ (각 이미지와 동일한 이름의 .txt)
+end note
+
+@enduml

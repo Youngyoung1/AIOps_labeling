@@ -1,0 +1,61 @@
+@startuml DB_JSON_TXT_DataModel
+title "Data Flow: Local JSON Files → YOLO TXT"
+
+' Layout & Style Improvements
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam linetype ortho
+skinparam packagePadding 8
+skinparam classPadding 6
+skinparam defaultTextAlignment center
+skinparam classTextAlignment center
+skinparam packageTextAlignment center
+left to right direction
+
+package "Local Folder (Windows File Manager)" as LocalFS {
+    class AnnotationFile {
+        file_name : string
+        imagePath : string
+        imageWidth : int
+        imageHeight : int
+        flags : object [opt]
+        shapes : Shape[]
+    }
+    class Shape {
+        label : string
+        points : (float,float)[]
+        shape_type : string
+        description : string [opt]
+    }
+    AnnotationFile "1" o-- "*" Shape
+}
+
+package "JSON Annotation File" as JSONFile {
+    class JsonFile {
+        version : string
+        imagePath : string
+        imageHeight : int
+        imageWidth : int
+        flags : object [opt]
+        shapes : Shape[]
+    }
+    JsonFile "1" o-- "*" Shape
+}
+
+package "YOLO Label File" as YOLOLabel {
+    class TxtLabel {
+        file_name : string
+        lines : string[]
+    }
+    note right of TxtLabel
+        Each line format:
+        <class_id> <cx> <cy> <w> <h>
+    end note
+}
+
+' Relationships
+LocalFS --> JSONFile : "JSON 파일 로드\n(prepare_dataset_from_local_files)"
+
+JSONFile --> YOLOLabel : "YOLO 변환\n(create_local_yolo_dataset)"
+
+@enduml

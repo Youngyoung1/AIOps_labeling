@@ -96,6 +96,87 @@ def confirm_dangerous_operation(operation_type, target="", count=0):
         return False
 
 
+class NASMongoConfig:
+    """NAS 환경에서의 MongoDB 연결 관리 클래스"""
+    
+    @staticmethod
+    def detect_nas_mongodb_servers() -> List[str]:
+        """네트워크에서 MongoDB 서버 자동 감지"""
+        import socket
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def check_port(ip: str, port: int = 27017, timeout: float = 1.0) -> bool:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(timeout)
+                result = sock.connect_ex((ip, port))
+                sock.close()
+                return result == 0
+            except:
+                return False
+        
+        # 현재 네트워크 대역 감지
+        try:
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            network_base = '.'.join(local_ip.split('.')[:-1]) + '.'
+        except:
+            network_base = "192.168.1."
+        
+        found_servers = []
+        print(f"네트워크 {network_base}*에서 MongoDB 서버 검색 중...")
+        
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            futures = {executor.submit(check_port, f"{network_base}{i}"): f"{network_base}{i}" 
+                      for i in range(1, 255)}
+            
+            for future in as_completed(futures):
+                ip = futures[future]
+                if future.result():
+                    found_servers.append(ip)
+                    print(f"MongoDB 서버 발견: {ip}")
+        
+        return found_servers
+    
+    @staticmethod
+    def create_nas_uri(server_ip: str, username: str = "", password: str = "", 
+                      database: str = "labeling_db", port: int = 27017) -> str:
+        """NAS MongoDB URI 생성"""
+        if username and password:
+            return f"mongodb://{username}:{password}@{server_ip}:{port}/{database}"
+        else:
+            return f"mongodb://{server_ip}:{port}/{database}"
+    
+    @staticmethod
+    def test_nas_connection(uri: str) -> Dict[str, Any]:
+        """NAS MongoDB 연결 테스트"""
+        try:
+            from pymongo import MongoClient
+            client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+            
+            # 기본 정보 수집
+            databases = client.list_database_names()
+            server_info = client.server_info()
+            
+            result = {
+                'success': True,
+                'server_version': server_info.get('version', 'Unknown'),
+                'databases': databases,
+                'connection_time': 'OK'
+            }
+            
+            client.close()
+            return result
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+                'error_type': type(e).__name__
+            }
+
+
 class MongoStorage:
     """Lightweight MongoDB storage helper for labeling data with vector search support."""
 

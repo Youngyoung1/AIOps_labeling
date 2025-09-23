@@ -165,17 +165,7 @@ class JSONMongoDBSyncService(QObject):
                     for image_path in widget.image_list:
                         image_dir = os.path.dirname(image_path)
                         directories.add(image_dir)
-            
-            # 기본 감시 디렉토리 추가
-            default_dirs = [
-                r"C:\Users\pc\Desktop\인턴\SKPoC\Unclear_file",
-                os.getcwd()
-            ]
-            
-            for dir_path in default_dirs:
-                if os.path.exists(dir_path):
-                    directories.add(dir_path)
-            
+                                    
         except Exception as e:
             logger.debug(f"감시 디렉토리 자동 감지 오류: {e}")
         

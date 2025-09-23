@@ -375,6 +375,20 @@ class MainWindow(QMainWindow):
         spacer_action.setDefaultWidget(spacer)
         menubar.addAction(spacer_action)
 
+        # Roboflow 메뉴 추가
+        roboflow_menu = menubar.addMenu('🚀 Roboflow')
+        
+        pipeline_action = QAction('자동화 파이프라인', self)
+        pipeline_action.setShortcut('Ctrl+Shift+R')
+        pipeline_action.triggered.connect(self.open_roboflow_pipeline)
+        roboflow_menu.addAction(pipeline_action)
+        
+        roboflow_menu.addSeparator()
+        
+        upload_action = QAction('수동 업로드', self)
+        upload_action.triggered.connect(self.open_roboflow_upload)
+        roboflow_menu.addAction(upload_action)
+
         db_menu = menubar.addMenu('DB')
 
         manage_action = QAction('데이터베이스 관리', self)
@@ -1141,3 +1155,53 @@ class MainWindow(QMainWindow):
         
         QMessageBox.warning(self, "파일 로딩 오류", "파일 로딩 기능을 찾을 수 없습니다.")
         return False
+
+    # -------------------- Roboflow Integration --------------------
+    def open_roboflow_pipeline(self):
+        """로컬 YOLO 데이터셋 생성 다이얼로그 열기"""
+        try:
+            storage = getattr(self, 'mongo_storage', None)
+            if not storage or not storage.test_connection():
+                QMessageBox.warning(self, '로컬 데이터셋 생성', 'MongoDB에 연결할 수 없습니다. 설정을 확인하세요.')
+                return
+
+            from anylabeling.views.roboflow.pipeline_dialog import LocalYoloDatasetDialog
+            
+            dialog = LocalYoloDatasetDialog(self, storage)
+            
+            # 로컬 데이터셋 관리자 설정
+            try:
+                from anylabeling.services.roboflow.roboflow_client import LocalDatasetManager, LocalDatasetConfig
+                from anylabeling.services.roboflow.pipeline_automation import PipelineAutomation
+                
+                # 기본 설정
+                default_output = os.path.join(os.path.expanduser("~"), "Desktop", "yolo_datasets")
+                config = LocalDatasetConfig(
+                    output_directory=default_output,
+                    dataset_name="temp_dataset",  # 실제로는 UI에서 설정됨
+                    create_subfolders=True,
+                    copy_images=True
+                )
+                
+                client = LocalDatasetManager(config)
+                pipeline_automation = PipelineAutomation(client)
+                
+                dialog.set_pipeline_automation(pipeline_automation)
+                
+            except ImportError as e:
+                QMessageBox.warning(self, '로컬 데이터셋 모듈 오류', f'데이터셋 생성 모듈을 불러올 수 없습니다:\n{str(e)}')
+                return
+            
+            dialog.exec_()
+            
+        except Exception as e:
+            QMessageBox.critical(self, '로컬 데이터셋 생성 오류', f'데이터셋 생성기를 여는 중 오류가 발생했습니다:\n{str(e)}')
+
+    def open_roboflow_upload(self):
+        """Roboflow 수동 업로드 다이얼로그 열기"""
+        try:
+            QMessageBox.information(self, 'Roboflow 업로드', '수동 업로드 기능은 준비 중입니다.')
+            # TODO: RoboflowUploadDialog 구현 후 활성화
+            
+        except Exception as e:
+            QMessageBox.critical(self, 'Roboflow 업로드 오류', f'업로드 창을 여는 중 오류가 발생했습니다:\n{str(e)}')

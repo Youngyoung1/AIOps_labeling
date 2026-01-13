@@ -436,9 +436,9 @@ class TrainingConfirmDialog(QDialog):
         formatted_cmd = base_cmd + " \\\n"
         for i, param in enumerate(params):
             if i == len(params) - 1:
-                formatted_cmd += f"    {param}"
+                formatted_cmd += "    {}".format(param)
             else:
-                formatted_cmd += f"    {param} \\\n"
+                formatted_cmd += "    {} \\\n".format(param)
 
         return formatted_cmd
 

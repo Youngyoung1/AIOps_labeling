@@ -2159,7 +2159,7 @@ class LabelConverter:
                 )
                 crop_img_count += 1
             if annotations:
-                Label = f"{dir_name}/{image_name}\t{json.dumps(annotations, ensure_ascii=False)}\n"
+                Label = "{}/{}\t{}\n".format(dir_name, image_name, json.dumps(annotations, ensure_ascii=False))
                 with open(Label_file, "a", encoding="utf-8") as f:
                     f.write(Label)
                 with open(rec_gt_file, "a", encoding="utf-8") as f:
@@ -2190,7 +2190,7 @@ class LabelConverter:
                     )
                 )
             if annotations:
-                item = f"{dir_name}/{image_name}\t{json.dumps(annotations, ensure_ascii=False)}\n"
+                item = "{}/{}\t{}\n".format(dir_name, image_name, json.dumps(annotations, ensure_ascii=False))
                 with open(ppocr_kie_file, "a", encoding="utf-8") as f:
                     f.write(item)
             return class_set

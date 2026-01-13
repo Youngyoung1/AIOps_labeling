@@ -226,12 +226,12 @@ class AboutDialog(QDialog):
         )
         system_info, pkg_info = collect_system_info()
         system_info_str = "\n".join(
-            [f"{key}: {value}" for key, value in system_info.items()]
+            ["{}: {}".format(key, value) for key, value in system_info.items()]
         )
         pkg_info_str = "\n".join(
-            [f"{key}: {value}" for key, value in pkg_info.items()]
+            ["{}: {}".format(key, value) for key, value in pkg_info.items()]
         )
-        msg = f"{app_info}\n{system_info_str}\n\n{pkg_info_str}"
+        msg = "{}\n{}\n\n{}".format(app_info, system_info_str, pkg_info_str)
 
         popup = Popup(
             self.tr("Copied!"),

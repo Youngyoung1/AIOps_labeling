@@ -30,11 +30,10 @@ from anylabeling.views.labeling.utils import new_icon, gradient_text
 from anylabeling.views.labeling.utils.update_checker import (
     check_for_updates_async,
 )
-from anylabeling.services.bidirectional_sync import BidirectionalSyncService
+# ⛔ MongoDB 동기화 비활성화 - BidirectionalSyncService 제거됨
 
 # NOTE: Do not remove this import, it is required for loading translations
 from anylabeling.resources import resources
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -51,6 +50,12 @@ def main():
         "--no-auto-update-check",
         action="store_true",
         help="disable automatic update check on startup",
+    )
+    parser.add_argument(
+        "--enable-bidirectional-sync",
+        action="store_true",
+        help="enable JSON ↔ MongoDB bidirectional sync (disabled by default)",
+        default=argparse.SUPPRESS,
     )
     parser.add_argument(
         "filename",
@@ -170,6 +175,19 @@ def main():
     config_file_or_yaml = config_from_args.pop("config")
     logger_level = config_from_args.pop("logger_level")
     no_auto_update_check = config_from_args.pop("no_auto_update_check", False)
+    enable_bidirectional_sync = bool(
+        config_from_args.pop("enable_bidirectional_sync", False)
+    )
+    if os.environ.get("XANYLABELING_ENABLE_BIDIRECTIONAL_SYNC", "").strip() in (
+        "1",
+        "true",
+        "True",
+        "yes",
+        "YES",
+        "on",
+        "ON",
+    ):
+        enable_bidirectional_sync = True
 
     logger.setLevel(getattr(logging, logger_level.upper()))
     logger.info(
@@ -236,45 +254,8 @@ def main():
     window.raise_()
     window.activateWindow()
 
-    # Enable bidirectional sync (JSON ↔ MongoDB)
-    try:
-        sync_service = BidirectionalSyncService(window)
-
-        # Determine watch directories from inputs
-        watch_dirs = set()
-        try:
-            if filename:
-                if os.path.isdir(filename):
-                    watch_dirs.add(os.path.abspath(filename))
-                elif os.path.isfile(filename):
-                    watch_dirs.add(os.path.dirname(os.path.abspath(filename)))
-        except Exception:
-            pass
-
-        if output_dir:
-            try:
-                watch_dirs.add(os.path.abspath(output_dir))
-            except Exception:
-                pass
-
-        # Fallback to current working directory if nothing else
-        if not watch_dirs:
-            try:
-                watch_dirs.add(os.path.abspath(os.getcwd()))
-            except Exception:
-                pass
-
-        for d in watch_dirs:
-            if d and os.path.exists(d):
-                sync_service.add_watch_directory(d)
-
-        # Start and inject into window if MongoDB available
-        if sync_service.start():
-            window.set_bidirectional_sync_service(sync_service)
-        else:
-            logger.debug("Bidirectional sync not started (missing MongoDB connection or no watch dirs)")
-    except Exception as e:
-        logger.debug(f"Bidirectional sync initialization skipped: {e}")
+    # ⛔ Bidirectional sync (JSON ↔ MongoDB) 완전 비활성화
+    # MongoDB 연결 기능이 제거되었습니다
 
     # Check for updates if enabled
     if not no_auto_update_check:

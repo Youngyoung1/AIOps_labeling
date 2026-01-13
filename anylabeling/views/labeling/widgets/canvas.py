@@ -1461,11 +1461,8 @@ class Canvas(
         if self.show_texts:
             text_color = "#FFFFFF"
             background_color = "#007BFF"
-            p.setFont(
-                QtGui.QFont(
-                    "Arial", int(max(6.0, int(round(8.0 / Shape.scale))))
-                )
-            )
+            base_text_size = int(max(6.0, int(round(8.0 / Shape.scale))))
+            p.setFont(QtGui.QFont("Arial", base_text_size + 3))
             pen = QtGui.QPen(QtGui.QColor(background_color), 8, Qt.SolidLine)
             p.setPen(pen)
             for shape in self.shapes:
@@ -1504,11 +1501,8 @@ class Canvas(
 
         # Draw labels
         if self.show_labels:
-            p.setFont(
-                QtGui.QFont(
-                    "Arial", int(max(6.0, int(round(8.0 / Shape.scale))))
-                )
-            )
+            base_label_size = int(max(6.0, int(round(8.0 / Shape.scale))))
+            p.setFont(QtGui.QFont("Arial", base_label_size + 3))
             labels = []
             for shape in self.shapes:
                 if not shape.visible:

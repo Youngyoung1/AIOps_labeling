@@ -237,12 +237,14 @@ class MongoStorage:
                 self.images.create_index([("filename", ASCENDING)], name="filename_1")
             except Exception:
                 pass
-            # 사용자 환경에서 사용될 수 있는 다양한 필드명에 대한 인덱스도 시도
-            for field, idx_name in [("imagePath", "imagePath_1"), ("image_file_path", "image_file_path_1"), ("path", "path_1")]:
-                try:
-                    self.images.create_index([(field, ASCENDING)], name=idx_name)
-                except Exception:
-                    pass
+            # 레거시 필드 인덱스는 기본적으로 생성하지 않음 (환경변수로만 활성화)
+            # ENABLE_LEGACY_IMAGE_INDEXES=1 이면 하위호환 인덱스(imagePath_1, image_file_path_1, path_1) 생성
+            if os.getenv("ENABLE_LEGACY_IMAGE_INDEXES", "0") in ("1", "true", "True", "TRUE"):
+                for field, idx_name in [("imagePath", "imagePath_1"), ("image_file_path", "image_file_path_1"), ("path", "path_1")]:
+                    try:
+                        self.images.create_index([(field, ASCENDING)], name=idx_name)
+                    except Exception:
+                        pass
             # 벡터 검색을 위한 텍스트 인덱스 추가
             self.annotations.create_index([("label", "text"), ("description", "text")])
         except Exception:
@@ -494,15 +496,15 @@ class MongoStorage:
         try:
             vec1 = np.array(vec1)
             vec2 = np.array(vec2)
-            
+
             dot_product = np.dot(vec1, vec2)
             norm_vec1 = np.linalg.norm(vec1)
             norm_vec2 = np.linalg.norm(vec2)
-            
+
             if norm_vec1 == 0 or norm_vec2 == 0:
                 return 0.0
-            
-            return dot_product / (norm_vec1 * norm_vec2)
+
+            return float(dot_product / (norm_vec1 * norm_vec2))
         except Exception:
             return 0.0
 

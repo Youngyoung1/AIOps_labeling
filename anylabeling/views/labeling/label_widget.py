@@ -3547,15 +3547,21 @@ class LabelingWidget(LabelDialog):
             ).strip()
             for s in self.canvas.shapes
         )
+        has_shape_tag = False
+        for s in self.canvas.shapes:
+            tag_val = getattr(s, "tag", None)
+            if isinstance(tag_val, str) and tag_val.strip():
+                has_shape_tag = True
+                break
+            if isinstance(tag_val, (list, tuple, set)):
+                if any(str(t).strip() for t in tag_val):
+                    has_shape_tag = True
+                    break
 
         # JSON 경로 계산 (이미 존재하면 description 없어도 동기화 유지)
         base_no_ext, _ = osp.splitext(filename if filename else self.image_path)
         json_path = f"{base_no_ext}.json"
         existing_json = osp.exists(json_path)
-
-        if not (has_image_desc or has_shape_desc or existing_json):
-            # 최초 조건(설명) 없고 기존 JSON 도 없으면 생성 스킵
-            return True
 
         # JSON 생성 로직 (원래 포맷 유지) - shapes 전체 직렬화
         try:
@@ -4791,9 +4797,9 @@ class LabelingWidget(LabelDialog):
         if status:
             text = self.tr("검수 상태: %s") % str(status)
             if stage is not None:
-                text += f"  (stage: {stage})"
+                text += "  (stage: {})".format(stage)
             if reason:
-                text += f"\n사유: {reason}"
+                text += "\n사유: {}".format(reason)
             self.review_status_label.setText(text)
         else:
             # 상태를 구하지 못했을 때, DB가 없으면 안내 문구 유지

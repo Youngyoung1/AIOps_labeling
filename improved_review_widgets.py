@@ -320,10 +320,10 @@ class AnnotationDetailDialog(QMessageBox):
         
         # shapes 정보
         shapes = self.annotation_data.get('shapes', [])
-        details.append(f"\n=== 검출된 객체 ({len(shapes)}개) ===")
+        details.append("\n=== 검출된 객체 ({}개) ===".format(len(shapes)))
         
         for i, shape in enumerate(shapes):
-            details.append(f"\n[객체 {i+1}]")
+            details.append("\n[객체 {}]".format(i+1))
             details.append(f"  라벨: {shape.get('label', 'N/A')}")
             details.append(f"  형태: {shape.get('shape_type', 'N/A')}")
             details.append(f"  어려움: {'예' if shape.get('difficult', False) else '아니오'}")
@@ -387,7 +387,7 @@ class LabelMeReviewSearch(QMainWindow):
             except Exception as e:
                 # 구체 원인 포함 안내
                 print(f"MongoDB 데이터 로드 실패: {e}")
-                QMessageBox.critical(self, "DB 연결 실패", f"MongoDB 데이터 로드에 실패하였습니다.\n사유: {str(e)}")
+                QMessageBox.critical(self, "DB 연결 실패", "MongoDB 데이터 로드에 실패하였습니다.\n사유: " + str(e))
                 # 실패 시에는 샘플 데이터 사용하지 않고 빈 상태로 둠
                 self.sample_data = []
                 self.filtered_data = []
@@ -1227,7 +1227,7 @@ class LabelMeReviewSearch(QMainWindow):
                 return
             
             result_lines = []
-            result_lines.append(f"=== 검색 결과: {len(results)}개 ===\n")
+            result_lines.append("=== 검색 결과: {}개 ===\n".format(len(results)))
             
             if results:
                 # 라벨별 통계
@@ -1240,7 +1240,7 @@ class LabelMeReviewSearch(QMainWindow):
                 for label, count in sorted(label_counts.items(), key=lambda x: x[1], reverse=True):
                     result_lines.append(f"  {label}: {count}개")
                 
-                result_lines.append(f"\n처음 10개 결과:")
+                result_lines.append("\n처음 10개 결과:")
                 for i, r in enumerate(results[:10]):
                     result_lines.append(f"{i+1}. {r.get('imagePath', 'N/A')}")
                     result_lines.append(f"   라벨: {', '.join(r.get('labels', []))}")
@@ -1248,14 +1248,14 @@ class LabelMeReviewSearch(QMainWindow):
                         result_lines.append(f"   설명: {r.get('description')[:50]}...")
                 
                 if len(results) > 10:
-                    result_lines.append(f"\n... 및 {len(results) - 10}개 더")
+                    result_lines.append("\n... 및 {}개 더".format(len(results) - 10))
             else:
                 result_lines.append("조건에 맞는 어노테이션을 찾을 수 없습니다.")
             
             result_widget.setPlainText("\n".join(result_lines))
             
         except Exception as e:
-            result_widget.setPlainText(f"검색 중 오류가 발생했습니다:\n{str(e)}")
+            result_widget.setPlainText("검색 중 오류가 발생했습니다:\n" + str(e))
 
     def show_label_detail(self):
         """선택된 라벨의 상세 정보 표시"""

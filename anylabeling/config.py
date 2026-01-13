@@ -9,6 +9,8 @@ from anylabeling.views.labeling.logger import logger
 current_config_file = None
 
 def update_dict(target_dict, new_dict, validate_item=None):
+    if new_dict is None:
+        return
     for key, value in new_dict.items():
         if validate_item:
             validate_item(key, value)
@@ -75,6 +77,8 @@ def get_config(
     if not isinstance(config_from_yaml, dict):
         with open(config_file_or_yaml, encoding="utf-8") as f:
             config_from_yaml = yaml.safe_load(f)
+    if config_from_yaml is None:
+        config_from_yaml = {}
     update_dict(config, config_from_yaml, validate_item=validate_config_item)
     if show_msg:
         logger.info(

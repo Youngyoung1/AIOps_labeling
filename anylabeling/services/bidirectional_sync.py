@@ -66,6 +66,10 @@ class BidirectionalSyncService(QObject):
     # X-AnyLabeling 하위 폴더는 동기화에서 제외
     # 필요 시 앱 설정으로 이 값을 지정하면 그 경로 이하 파일은 동기화에서 제외됩니다.
     IGNORE_PREFIX = None
+    DEFAULT_IGNORE_MONGODB_TO_JSON_BASENAMES = {
+        # 특정 파일의 MongoDB → JSON(덮어쓰기) 동기화를 기본적으로 차단
+        "20251008093534367_right_img_1.json",
+    }
     """양방향 JSON ↔ MongoDB 동기화 서비스"""
     
     # Qt 시그널
@@ -74,13 +78,55 @@ class BidirectionalSyncService(QObject):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # IGNORE_PREFIX 기본값 설정
         self.IGNORE_PREFIX = None
+
+        # 동기화 동작 옵션 (config/env로 제어)
+        parent_config = getattr(parent, "config", None) if parent is not None else None
+        sync_config = {}
+        if isinstance(parent_config, dict):
+            sync_config = parent_config.get("bidirectional_sync", {}) or {}
+        self.enable_json_to_mongodb = bool(
+            sync_config.get("enable_json_to_mongodb", True)
+        )
+        self.enable_mongodb_to_json = bool(
+            sync_config.get("enable_mongodb_to_json", True)
+        )
+        if os.environ.get("XANYLABELING_DISABLE_MONGODB_TO_JSON", "").strip() in (
+            "1",
+            "true",
+            "True",
+            "yes",
+            "YES",
+            "on",
+            "ON",
+        ):
+            self.enable_mongodb_to_json = False
+
+        ignore_from_config = sync_config.get(
+            "ignore_mongodb_to_json_basenames", []
+        ) or []
+        ignore_from_env = os.environ.get(
+            "XANYLABELING_IGNORE_MONGODB_TO_JSON_BASENAMES", ""
+        ).strip()
+        ignore_from_env_list = (
+            [part.strip() for part in ignore_from_env.split(",") if part.strip()]
+            if ignore_from_env
+            else []
+        )
+        self.ignore_mongodb_to_json_basenames = {
+            str(name).strip().lower()
+            for name in (
+                list(self.DEFAULT_IGNORE_MONGODB_TO_JSON_BASENAMES)
+                + list(ignore_from_config)
+                + list(ignore_from_env_list)
+            )
+            if str(name).strip()
+        }
         
         # X-AnyLabeling 하위 폴더 동기화 제외 설정
         try:
-            import os
             # 현재 작업 디렉토리에서 X-AnyLabeling 폴더 찾기
             cwd = os.getcwd()
             # 기본 후보: 현재 작업 디렉토리 바로 아래의 X-AnyLabeling-main
@@ -150,6 +196,10 @@ class BidirectionalSyncService(QObject):
             'errors': 0,
             'last_sync': None
         }
+
+        # 한 번만 실행되어야 하는 동기화 여부 플래그
+        self._startup_sync_done = False
+        self._shutdown_sync_done = False
         
         # 현재 동기화 중인 파일 추적 (순환 동기화 방지)
         self.syncing_files = set()
@@ -285,6 +335,9 @@ class BidirectionalSyncService(QObject):
     def _sync_json_to_mongodb(self, json_file_path: str):
         """JSON 파일 → MongoDB 동기화"""
         try:
+            if not self.enable_json_to_mongodb:
+                logger.debug("JSON → MongoDB 동기화 비활성화됨")
+                return
             # 순환 동기화 방지
             self.syncing_files.add(json_file_path)
             # 무시할 경로는 동기화하지 않음
@@ -318,6 +371,9 @@ class BidirectionalSyncService(QObject):
             threading.Timer(2.0, lambda: self.syncing_files.discard(json_file_path)).start()
             
     def _sync_mongodb_to_json(self, mongodb_doc: Dict[str, Any]):
+        if not self.enable_mongodb_to_json:
+            logger.debug("MongoDB → JSON 동기화 비활성화됨")
+            return
         # MongoDB 문서에서 경로 추출 (None 대비)
         json_file_path = mongodb_doc.get('json_file_path')
         if not json_file_path:
@@ -330,6 +386,11 @@ class BidirectionalSyncService(QObject):
             return
         if self.IGNORE_PREFIX and abs_path.startswith(self.IGNORE_PREFIX):
             logger.debug(f"동기화 제외(무시 경로): {abs_path}")
+            return
+        if os.path.basename(abs_path).strip().lower() in self.ignore_mongodb_to_json_basenames:
+            logger.debug(
+                f"MongoDB → JSON 동기화 제외(무시 파일): {os.path.basename(abs_path)}"
+            )
             return
         if not os.path.exists(abs_path):
             logger.debug(f"MongoDB → JSON 동기화 건너뜀: 파일 없음 ({abs_path})")
@@ -413,6 +474,30 @@ class BidirectionalSyncService(QObject):
                 continue
             self._sync_mongodb_to_json(doc)
         logger.info(f"✅ 수동 전체 동기화 완료: JSON {json_count}개, MongoDB {len(mongodb_docs)}개")
+
+    def sync_on_startup_once(self) -> bool:
+        """앱 시작 시 한 번만 전체 동기화를 수행"""
+        if self._startup_sync_done:
+            logger.debug("시작 시 동기화는 이미 수행됨")
+            return False
+        if not self.annotation_manager:
+            logger.error("❌ MongoDB 연결이 없어 시작 시 동기화를 수행하지 않음")
+            return False
+        self._startup_sync_done = True
+        self.manual_sync_all()
+        return True
+
+    def sync_on_shutdown_once(self) -> bool:
+        """앱 종료 직전에 한 번만 전체 동기화를 수행"""
+        if self._shutdown_sync_done:
+            logger.debug("종료 직전 동기화는 이미 수행됨")
+            return False
+        if not self.annotation_manager:
+            logger.error("❌ MongoDB 연결이 없어 종료 전 동기화를 수행하지 않음")
+            return False
+        self._shutdown_sync_done = True
+        self.manual_sync_all()
+        return True
         
     def get_stats(self) -> Dict[str, Any]:
         """동기화 통계 반환"""

@@ -18,28 +18,116 @@ except ImportError:
 
 class AnnotationManager:
     def __init__(self, connection_string: str = None, db_name: str = None, config_path: str = "mongo_config.json"):
-        # mongo_config.json에서 설정 읽기
+        # .env 파일에서 MongoDB 설정 읽기
         if connection_string is None or db_name is None:
             try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-                connection_string = connection_string or config.get("connection_string", "mongodb://localhost:27017")
-                db_name = db_name or config.get("db_name", "labeling_db")
+                # .env 파일 경로 찾기 (현재 디렉토리부터 상위로 탐색)
+                env_path = self._find_env_file()
+                if env_path:
+                    env_vars = self._load_env_file(env_path)
+                    
+                    # .env 파일에서 MongoDB 인증 정보 구성 (IP는 로컬호스트로 강제)
+                    mongodb_ip = "127.0.0.1"  # MongoDB가 0.0.0.0에서 리스닝하므로 로컬호스트로 연결
+                    mongodb_port = env_vars.get("MONGODB_PORT", "27017")
+                    mongodb_username = env_vars.get("MONGODB_ADMIN_USERNAME", "admin")
+                    mongodb_password = env_vars.get("MONGODB_ADMIN_PASSWORD", "")
+                    mongodb_database = env_vars.get("MONGODB_DATABASE", "labeling_db")
+                    
+                    if mongodb_password:
+                        connection_string = connection_string or f"mongodb://{mongodb_username}:{mongodb_password}@{mongodb_ip}:{mongodb_port}/?authSource=admin"
+                    else:
+                        connection_string = connection_string or f"mongodb://{mongodb_ip}:{mongodb_port}/"
+                    
+                    db_name = db_name or mongodb_database
+                    logger.info(f"MongoDB 연결 설정: {mongodb_ip}:{mongodb_port}, DB: {db_name}, User: {mongodb_username}")
+                else:
+                    logger.warning(".env 파일을 찾을 수 없습니다. 기본 설정을 사용합니다.")
+                    
             except Exception as e:
-                logger.error(f"mongo_config.json 읽기 실패: {e}")
-                # 기본값 사용
-                connection_string = connection_string or "mongodb://localhost:27017"
-                db_name = db_name or "labeling_db"
+                logger.error(f".env 파일 읽기 실패: {e}")
+            
+            # mongo_config.json 백업 설정 (기존 호환성)
+            if connection_string is None or db_name is None:
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                    connection_string = connection_string or config.get("connection_string", "mongodb://localhost:27017")
+                    db_name = db_name or config.get("db_name", "labeling_db")
+                except Exception as e:
+                    logger.error(f"mongo_config.json 읽기 실패: {e}")
+                    # 기본값 사용
+                    connection_string = connection_string or "mongodb://localhost:27017"
+                    db_name = db_name or "labeling_db"
 
         try:
-            self.client = MongoClient(connection_string)
+            self.client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
+            # 연결 테스트
+            self.client.admin.command('ismaster')
             self.db = self.client[db_name]
             self.collection = self.db['annotations']  # 실제 컬렉션 이름: annotations
             self._create_indexes()
             logger.info(f"AnnotationManager 초기화 완료: {db_name}")
         except Exception as e:
-            logger.error(f"AnnotationManager 초기화 실패: {e}")
-            raise
+            logger.error(f"인증된 MongoDB 연결 실패: {e}")
+            # 인증 오류 시 인증 없는 연결로 재시도
+            try:
+                logger.info("인증 없는 MongoDB 연결을 시도합니다...")
+                # .env에서 기본 정보 가져오기 (IP는 로컬호스트로 강제)
+                env_path = self._find_env_file()
+                if env_path:
+                    env_vars = self._load_env_file(env_path)
+                    # MongoDB가 0.0.0.0에서 리스닝하므로 로컬호스트로 연결
+                    mongodb_ip = "127.0.0.1"  # env_vars.get("MONGODB_SERVER_IP", "127.0.0.1")
+                    mongodb_port = env_vars.get("MONGODB_PORT", "27017")
+                    db_name = env_vars.get("MONGODB_DATABASE", "labeling_db")
+                    # .env에서 관리자 계정 정보 읽기
+                    admin_username = env_vars.get("MONGODB_ADMIN_USERNAME", "admin")
+                    admin_password = env_vars.get("MONGODB_ADMIN_PASSWORD", "Admin$ecure2024!")
+                else:
+                    mongodb_ip = "127.0.0.1"
+                    mongodb_port = "27017"
+                    admin_username = "admin"
+                    admin_password = "Admin$ecure2024!"
+                
+                # 관리자 계정으로 fallback 연결 시도 (.env 정보 사용)
+                fallback_connection = f"mongodb://{admin_username}:{admin_password}@{mongodb_ip}:{mongodb_port}/?authSource=admin"
+                logger.info(f"Fallback 연결 시도 (관리자 계정): mongodb://{admin_username}:***@{mongodb_ip}:{mongodb_port}/?authSource=admin")
+                
+                self.client = MongoClient(fallback_connection, serverSelectionTimeoutMS=5000)
+                self.client.admin.command('ismaster')
+                self.db = self.client[db_name]
+                self.collection = self.db['annotations']
+                self._create_indexes()
+                logger.info(f"AnnotationManager 초기화 완료 (인증 없음): {db_name}")
+                
+            except Exception as fallback_error:
+                logger.error(f"Fallback MongoDB 연결도 실패: {fallback_error}")
+                logger.error("MongoDB가 실행 중이 아니거나 접근할 수 없습니다.")
+                raise
+
+    def _find_env_file(self):
+        """현재 디렉토리부터 상위로 .env 파일 찾기"""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        while current_dir != os.path.dirname(current_dir):  # 루트까지
+            env_path = os.path.join(current_dir, '.env')
+            if os.path.exists(env_path):
+                return env_path
+            current_dir = os.path.dirname(current_dir)
+        return None
+    
+    def _load_env_file(self, env_path):
+        """간단한 .env 파일 파서"""
+        env_vars = {}
+        try:
+            with open(env_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        env_vars[key.strip()] = value.strip()
+        except Exception as e:
+            logger.error(f".env 파일 파싱 오류: {e}")
+        return env_vars
 
     def _create_indexes(self):
         """필요한 인덱스 생성"""
@@ -99,6 +187,16 @@ class AnnotationManager:
             logger.info("MongoDB 인덱스 생성 완료 (텍스트 인덱스는 최대 1개)")
         except Exception as e:
             logger.warning(f"인덱스 생성 중 에러: {e}")
+
+    def _safe_relpath(self, target_path: str, start: str = None) -> str:
+        """
+        다른 드라이브에 있는 경로를 relpath로 변환할 때 발생하는 ValueError를 방지.
+        드라이브가 다르면 절대 경로를 그대로 반환한다.
+        """
+        try:
+            return os.path.relpath(target_path, start or os.getcwd())
+        except ValueError:
+            return os.path.abspath(target_path)
 
     def _extract_annotation_features(self, json_data: Dict[str, Any]) -> Dict[str, Any]:
         """JSON 데이터에서 검색 최적화용 필드들 추출"""
@@ -179,7 +277,7 @@ class AnnotationManager:
                     "json_file_path": abs_path,
                     "json_file_name": os.path.basename(abs_path),
                     "json_directory": os.path.dirname(abs_path),
-                    "json_relative_path": os.path.relpath(abs_path),
+                    "json_relative_path": self._safe_relpath(abs_path),
                 }
 
                 # 이미지 파일 경로 정보
@@ -198,7 +296,7 @@ class AnnotationManager:
                         "image_file_path": image_abs_path,
                         "image_file_name": os.path.basename(image_abs_path),
                         "image_directory": os.path.dirname(image_abs_path),
-                        "image_relative_path": os.path.relpath(image_abs_path),
+                        "image_relative_path": self._safe_relpath(image_abs_path),
                         "image_exists": image_exists,
                         "same_directory": same_directory,
                         "image_extension": os.path.splitext(image_abs_path)[1].lower(),

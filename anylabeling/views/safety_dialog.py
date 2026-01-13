@@ -54,13 +54,13 @@ class SafetyConfirmDialog(QDialog):
         details_text.setReadOnly(True)
         details_text.setMaximumHeight(120)
         
-        info_content = f"• 작업 유형: {self.operation_type}\n"
+        info_content = "• 작업 유형: {}\n".format(self.operation_type)
         if self.details.get('target'):
-            info_content += f"• 대상: {self.details['target']}\n"
+            info_content += "• 대상: {}\n".format(self.details['target'])
         if self.count > 0:
-            info_content += f"• 영향받는 항목: {self.count}\n"
+            info_content += "• 영향받는 항목: {}\n".format(self.count)
         if self.details.get('warning'):
-            info_content += f"• 주의사항: {self.details['warning']}\n"
+            info_content += "• 주의사항: {}\n".format(self.details['warning'])
             
         details_text.setPlainText(info_content)
         details_text.setStyleSheet("""
@@ -168,11 +168,11 @@ def confirm_dangerous_operation(operation_type, target="", count=0):
         msg_box.setWindowTitle("⚠️ 작업 확인")
         msg_box.setIcon(QMessageBox.Warning)
         
-        message = f"작업 유형: {operation_type}\n"
+        message = "작업 유형: {}\n".format(operation_type)
         if target:
-            message += f"대상: {target}\n"
+            message += "대상: {}\n".format(target)
         if count > 0:
-            message += f"영향받는 항목: {count}개\n"
+            message += "영향받는 항목: {}개\n".format(count)
         message += "\n계속 진행하시겠습니까?"
         
         msg_box.setText(message)

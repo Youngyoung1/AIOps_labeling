@@ -25,10 +25,9 @@ from PyQt5.QtWidgets import (
 from .image_gallery import ImageGallery
 from ..app_info import __appdescription__, __appname__
 from .labeling.label_wrapper import LabelingWrapper
-try:
-    from ..services.storage.mongo_provider import get_storage
-except Exception:
-    get_storage = None
+
+# ⛔ MongoDB 연결 완전 비활성화
+get_storage = None
 
 
 class BaseImagePickerDialog(QDialog):
@@ -309,13 +308,9 @@ class MainWindow(QMainWindow):
         self.setContentsMargins(0, 0, 0, 0)
         self.setWindowTitle(__appname__)
 
-        # Initialize MongoDB storage
+        # ⛔ MongoDB 연결 완전 비활성화
         self.mongo_storage = None
-        try:
-            if get_storage:
-                self.mongo_storage = get_storage()
-        except Exception:
-            self.mongo_storage = None
+        # MongoDB 초기화 제거됨
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(10, 10, 10, 10)
@@ -346,11 +341,8 @@ class MainWindow(QMainWindow):
         self.setup_menu_bar()
 
         status_bar = QStatusBar()
-        try:
-            db_ok = self.mongo_storage.test_connection() if self.mongo_storage else False
-        except Exception:
-            db_ok = False
-        db_txt = '연결 성공' if db_ok else '연결 실패'
+        # ⛔ MongoDB 연결 테스트 비활성화
+        db_txt = '미사용'
         status_bar.showMessage(f"{__appname__} - {__appdescription__} | DB: {db_txt}")
         self.setStatusBar(status_bar)
 
@@ -461,7 +453,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         except Exception as e:
-            QMessageBox.critical(self, 'DB 관리 오류', f'DB 관리 창을 여는 중 오류가 발생했습니다:\n{str(e)}')
+            QMessageBox.critical(self, 'DB 관리 오류', 'DB 관리 창을 여는 중 오류가 발생했습니다:\n' + str(e))
 
     def open_review_manager_with_check(self):
         """태그별 사진 보기"""
@@ -535,7 +527,7 @@ class MainWindow(QMainWindow):
             image_paths = _get_tagged_image_paths(selected_tag)
             
             if not image_paths:
-                QMessageBox.information(self, "태그 사진", f"선택한 태그에 해당하는 이미지가 없습니다.\n\n태그: {selected_tag}")
+                QMessageBox.information(self, "태그 사진", "선택한 태그에 해당하는 이미지가 없습니다.\n\n태그: {}".format(selected_tag))
                 return
             
             gallery = ImageGallery(image_paths, parent=self)
@@ -588,7 +580,7 @@ class MainWindow(QMainWindow):
                         self.open_review_manager()
                         return True
                     except Exception as e:
-                        QMessageBox.warning(self, "DB 검수", f"DB에서 찾은 파일을 여는 데 실패했습니다.\n경로: {db_any_path}\n오류: {e}")
+                        QMessageBox.warning(self, "DB 검수", "DB에서 찾은 파일을 여는 데 실패했습니다.\n경로: {}\n오류: {}".format(db_any_path, e))
                 else:
                     QMessageBox.information(self, "DB 검수", "MongoDB에서 검수 가능한 이미지를 찾지 못했습니다.")
                 return False
@@ -619,7 +611,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "DB 검수", "MongoDB에 파일 경로 정보가 없거나 파일을 찾을 수 없습니다.")
                 return False
         except Exception as e:
-            QMessageBox.critical(self, "DB 검수", f"MongoDB 확인 중 오류가 발생했습니다:\n{str(e)}")
+            QMessageBox.critical(self, "DB 검수", "MongoDB 확인 중 오류가 발생했습니다:\n" + str(e))
             return False
 
     def _find_any_image_path_with_description_in_db(self, storage) -> str:
@@ -732,7 +724,7 @@ class MainWindow(QMainWindow):
                     return
             QMessageBox.information(self, "검수 관리", "개선된 검수 위젯(improved_review_widgets.py)을 찾을 수 없습니다.\nDB 메뉴의 '데이터베이스 관리'를 사용하세요.")
         except Exception as e:
-            QMessageBox.critical(self, "검수 관리 오류", f"검수 관리 창을 여는 중 오류가 발생했습니다:\n{str(e)}")
+            QMessageBox.critical(self, "검수 관리 오류", "검수 관리 창을 여는 중 오류가 발생했습니다:\n" + str(e))
 
     def show_image_gallery(self, status_cond=None, use_json_status_filter=False):
         try:
@@ -860,7 +852,7 @@ class MainWindow(QMainWindow):
                 image_paths = _get_filtered_image_paths(selected_status)
                 
                 if not image_paths:
-                    QMessageBox.information(self, "검수 사진", f"선택한 상태에 해당하는 이미지가 없습니다.\n\n상태: {selected_status}\n\n※ shape-level description이 있는 이미지만 표시됩니다.")
+                    QMessageBox.information(self, "검수 사진", "선택한 상태에 해당하는 이미지가 없습니다.\n\n상태: {}\n\n※ shape-level description이 있는 이미지만 표시됩니다.".format(selected_status))
                     return
                 
                 gallery = ImageGallery(image_paths, parent=self)
@@ -878,7 +870,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            QMessageBox.critical(self, "오류", f"갤러리를 여는 중 오류가 발생했습니다:\n{str(e)}")
+            QMessageBox.critical(self, "오류", "갤러리를 여는 중 오류가 발생했습니다:\n" + str(e))
 
     # -------------------- Json 파일 동기화 --------------------
     def _pre_sync_json_changes(self):
@@ -966,12 +958,12 @@ class MainWindow(QMainWindow):
         if not batch_loaded:
             if last_exc:
                 method, e = last_exc
-                QMessageBox.warning(self, "Image Batch Load Error", f"Error in '{method}':\n\n{type(e).__name__}: {e}\n\nLoading single file instead.")
+                QMessageBox.warning(self, "Image Batch Load Error", "Error in '{}':\n\n{}: {}\n\nLoading single file instead.".format(method, type(e).__name__, e))
             try:
                 candidate = selected_path if self._is_existing_path(selected_path) else next((p for p in (all_paths or []) if self._is_existing_path(p)), selected_path)
                 if candidate: self.load_file(candidate)
             except Exception as e:
-                QMessageBox.critical(self, "Image Load Error", f"Failed to load selected file.\n\nPath: {selected_path}\n{type(e).__name__}: {e}")
+                QMessageBox.critical(self, "Image Load Error", "Failed to load selected file.\n\nPath: {}\n{}: {}".format(selected_path, type(e).__name__, e))
 
     def on_gallery_closed(self):
         self.gallery_window = None
@@ -987,7 +979,7 @@ class MainWindow(QMainWindow):
                 else:
                     QMessageBox.information(self, '검색 결과', f'"{query}"에 대한 검색 결과가 없습니다.')
             except Exception as e:
-                QMessageBox.critical(self, '검색 오류', f'검색 중 오류가 발생했습니다:\n{str(e)}')
+                QMessageBox.critical(self, '검색 오류', '검색 중 오류가 발생했습니다:\n' + str(e))
 
     def show_db_stats(self):
         """간단한 통계 정보 표시"""
@@ -1004,16 +996,23 @@ class MainWindow(QMainWindow):
                 return ', '.join(parts) + extra
 
             msg = (
-                f"총 이미지: {stats.get('total_images', 0)}\n"
-                f"라벨 완료 이미지: {stats.get('labeled_images', 0)}\n"
-                f"총 어노테이션: {stats.get('total_annotations', 0)}\n"
-                f"진행률: {stats.get('progress', 0):.2f}%\n\n"
-                f"카테고리별: {summarize(stats.get('categories', []))}\n"
-                f"번호판 카테고리별: {summarize(stats.get('plate_categories', []))}"
+                "총 이미지: {}\n"
+                "라벨 완료 이미지: {}\n"
+                "총 어노테이션: {}\n"
+                "진행률: {:.2f}%\n\n"
+                "카테고리별: {}\n"
+                "번호판 카테고리별: {}".format(
+                    stats.get('total_images', 0),
+                    stats.get('labeled_images', 0),
+                    stats.get('total_annotations', 0),
+                    stats.get('progress', 0),
+                    summarize(stats.get('categories', [])),
+                    summarize(stats.get('plate_categories', []))
+                )
             )
             QMessageBox.information(self, 'DB 통계', msg)
         except Exception as e:
-            QMessageBox.critical(self, 'DB 통계 오류', f'통계 조회 중 오류가 발생했습니다:\n{str(e)}')
+            QMessageBox.critical(self, 'DB 통계 오류', '통계 조회 중 오류가 발생했습니다:\n' + str(e))
 
     def show_db_settings(self):
         """DB 세팅 및 접속 상태 표시"""
@@ -1021,9 +1020,9 @@ class MainWindow(QMainWindow):
             uri = getattr(self.mongo_storage, 'uri', 'mongodb://localhost:27017/')
             ok = self.mongo_storage.test_connection()
             status = '성공' if ok else '실패'
-            QMessageBox.information(self, 'DB 설정', f"연결 URI: {uri}\n연결 테스트: {status}")
+            QMessageBox.information(self, 'DB 설정', "연결 URI: {}\n연결 테스트: {}".format(uri, status))
         except Exception as e:
-            QMessageBox.critical(self, 'DB 설정 오류', f'설정 표시 중 오류가 발생했습니다:\n{str(e)}')
+            QMessageBox.critical(self, 'DB 설정 오류', '설정 표시 중 오류가 발생했습니다:\n' + str(e))
     
     # -------------------- JSON <-> MongoDB 동기화 --------------------
     
@@ -1038,15 +1037,15 @@ class MainWindow(QMainWindow):
             stats = sync_service.get_stats()
             watch_dirs = sync_service.watch_directories
             
-            status_text = f"동기화 서비스 상태: {'실행 중' if sync_service.is_running else '중지됨'}\n\n"
-            status_text += f"총 동기화: {stats['total_syncs']}, 성공: {stats['successful_syncs']}, 실패: {stats['failed_syncs']}\n"
-            status_text += f"감시 디렉토리 ({len(watch_dirs)}개):\n"
+            status_text = "동기화 서비스 상태: {}\n\n".format('실행 중' if sync_service.is_running else '중지됨')
+            status_text += "총 동기화: {}, 성공: {}, 실패: {}\n".format(stats['total_syncs'], stats['successful_syncs'], stats['failed_syncs'])
+            status_text += "감시 디렉토리 ({}개):\n".format(len(watch_dirs))
             status_text += "\n".join([f"{i}. {d}" for i, d in enumerate(watch_dirs[:5], 1)])
-            if len(watch_dirs) > 5: status_text += f"\n... 외 {len(watch_dirs) - 5}개"
+            if len(watch_dirs) > 5: status_text += "\n... 외 {}개".format(len(watch_dirs) - 5)
             
             QMessageBox.information(self, 'JSON → MongoDB 동기화 상태', status_text)
         except Exception as e:
-            QMessageBox.critical(self, '동기화 상태 오류', f'상태 확인 중 오류:\n{str(e)}')
+            QMessageBox.critical(self, '동기화 상태 오류', '상태 확인 중 오류:\n' + str(e))
     
     def _is_valid_sync_directory(self, path, app_root):
         return path and isinstance(path, str) and os.path.exists(path) and os.path.normpath(path) != app_root
@@ -1093,7 +1092,7 @@ class MainWindow(QMainWindow):
                 if not current_dir or not self._is_valid_sync_directory(current_dir, app_root):
                     QMessageBox.warning(self, '수동 동기화', '선택한 폴더는 동기화할 수 없습니다.')
                     return
-                if QMessageBox.question(self, '수동 동기화 확인', f'다음 디렉토리의 모든 JSON 파일을 MongoDB에 동기화하시겠습니까?\n\n{current_dir}', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                if QMessageBox.question(self, '수동 동기화 확인', '다음 디렉토리의 모든 JSON 파일을 MongoDB에 동기화하시겠습니까?\n\n{}'.format(current_dir), QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                     return
             
             sync_service = getattr(self, '_json_mongodb_sync_service', None)
@@ -1103,11 +1102,11 @@ class MainWindow(QMainWindow):
             
             stats = sync_service.manual_sync_directory(current_dir)
             
-            result_msg = f"수동 동기화 완료\n\n디렉토리: {current_dir}\n총 JSON: {stats['total']}, 성공: {stats['success']}, 실패: {stats['failed']}"
+            result_msg = "수동 동기화 완료\n\n디렉토리: {}\n총 JSON: {}, 성공: {}, 실패: {}".format(current_dir, stats['total'], stats['success'], stats['failed'])
             if stats['failed'] > 0: QMessageBox.warning(self, '수동 동기화 결과', result_msg)
             else: QMessageBox.information(self, '수동 동기화 결과', result_msg)
         except Exception as e:
-            QMessageBox.critical(self, '수동 동기화 오류', f'동기화 중 오류:\n{str(e)}')
+            QMessageBox.critical(self, '수동 동기화 오류', '동기화 중 오류:\n' + str(e))
     
     def set_json_mongodb_sync_service(self, sync_service):
         self._json_mongodb_sync_service = sync_service
@@ -1121,12 +1120,11 @@ class MainWindow(QMainWindow):
             sync_service.stats_updated.connect(self._on_sync_stats_updated)
 
     def add_sync_watch_directory(self, dir_path):
-        """Adds a directory to the sync watch list and performs an immediate sync."""
+        """Adds a directory to the sync watch list; sync runs once on start/end."""
         sync_service = getattr(self, '_bidirectional_sync_service', None)
         if sync_service and dir_path and os.path.isdir(dir_path):
             sync_service.add_watch_directory(dir_path)
-            sync_service.manual_sync_all()
-            self.statusBar().showMessage(f"동기화 폴더 추가 및 즉시 동기화: {dir_path}", 3000)
+            self.statusBar().showMessage(f"동기화 폴더 추가: {dir_path} (시작/종료 시 1회 동기화)", 3000)
     
     def _on_bidirectional_sync_completed(self, file_path: str, success: bool):
         """Called on bidirectional sync completion."""
@@ -1189,13 +1187,13 @@ class MainWindow(QMainWindow):
                 dialog.set_pipeline_automation(pipeline_automation)
                 
             except ImportError as e:
-                QMessageBox.warning(self, '로컬 데이터셋 모듈 오류', f'데이터셋 생성 모듈을 불러올 수 없습니다:\n{str(e)}')
+                QMessageBox.warning(self, '로컬 데이터셋 모듈 오류', '데이터셋 생성 모듈을 불러올 수 없습니다:\n' + str(e))
                 return
             
             dialog.exec_()
             
         except Exception as e:
-            QMessageBox.critical(self, '로컬 데이터셋 생성 오류', f'데이터셋 생성기를 여는 중 오류가 발생했습니다:\n{str(e)}')
+            QMessageBox.critical(self, '로컬 데이터셋 생성 오류', '데이터셋 생성기를 여는 중 오류가 발생했습니다:\n' + str(e))
 
     def open_roboflow_upload(self):
         """Roboflow 수동 업로드 다이얼로그 열기"""
@@ -1204,4 +1202,4 @@ class MainWindow(QMainWindow):
             # TODO: RoboflowUploadDialog 구현 후 활성화
             
         except Exception as e:
-            QMessageBox.critical(self, 'Roboflow 업로드 오류', f'업로드 창을 여는 중 오류가 발생했습니다:\n{str(e)}')
+            QMessageBox.critical(self, 'Roboflow 업로드 오류', '업로드 창을 여는 중 오류가 발생했습니다:\n' + str(e))

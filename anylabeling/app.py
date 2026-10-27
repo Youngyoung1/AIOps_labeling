@@ -35,7 +35,47 @@ from anylabeling.views.labeling.utils.update_checker import (
 # NOTE: Do not remove this import, it is required for loading translations
 from anylabeling.resources import resources
 
+def _install_crash_logging():
+    """프로그램이 갑자기 꺼지는 원인을 남기기 위한 기록.
+    - 파이썬 에러: 파일에 기록하고 앱은 계속 실행 (기본 동작은 PyQt5 가 앱을 강제 종료함)
+    - 네이티브 크래시: faulthandler 가 그 순간의 파이썬 호출 스택을 같은 파일에 남김"""
+    import faulthandler
+    import threading
+    import traceback
+    import datetime
+
+    log_dir = os.path.join(os.path.expanduser("~"), "xanylabeling_data")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "crash_log.txt")
+    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+    log_file.write("\n===== 시작 %s =====\n" % datetime.datetime.now())
+    faulthandler.enable(file=log_file, all_threads=True)
+
+    def _write(kind, exc_type, exc, tb):
+        try:
+            log_file.write(
+                "\n[%s] %s\n%s"
+                % (
+                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    kind,
+                    "".join(traceback.format_exception(exc_type, exc, tb)),
+                )
+            )
+        except Exception:
+            pass
+
+    def _excepthook(exc_type, exc, tb):
+        _write("파이썬 에러 (앱은 계속 실행)", exc_type, exc, tb)
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = _excepthook
+    threading.excepthook = lambda a: _write(
+        "스레드 에러", a.exc_type, a.exc_value, a.exc_traceback
+    )
+
+
 def main():
+    _install_crash_logging()
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--reset-config", action="store_true", help="reset qt config"

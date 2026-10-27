@@ -54,11 +54,11 @@ label_colors: null
 shape:
   # drawing
   line_color: [0, 255, 0, 128]
-  fill_color: [220, 220, 220, 150]
+  fill_color: [220, 220, 220, 0]
   vertex_fill_color: [0, 255, 0, 255]
   # selecting / hovering
   select_line_color: [255, 255, 255, 255]
-  select_fill_color: [0, 255, 0, 155]
+  select_fill_color: [0, 255, 0, 30]
   hvertex_fill_color: [255, 255, 255, 255]
   point_size: 10
   line_width: 4
@@ -145,7 +145,9 @@ shortcuts:
   create_point: null
   create_linestrip: null
   edit_polygon: Ctrl+J
-  delete_polygon: Delete
+  delete_polygon:
+  - Delete
+  - Insert
   duplicate_polygon: Ctrl+D
   copy_polygon: Ctrl+C
   paste_polygon: Ctrl+V

@@ -40,7 +40,7 @@ from .utils import image as image_utils
 from ...config import get_config, save_config
 from .label_file import LabelFile, LabelFileError
 from .logger import logger
-from .shape import Shape
+from .shape import Shape, HOVER_FILL_ALPHA, SELECT_FILL_ALPHA
 from .widgets import (
     AboutDialog,
     AutoLabelingWidget,
@@ -497,6 +497,21 @@ class LabelingWidget(LabelDialog):
             shortcuts["open_dir"],
             "open",
             self.tr("Open Dir"),
+        )
+        # 같은 상위 폴더 안의 다음/이전 폴더로 이동 (Ctrl+Shift+→ / ←)
+        open_next_folder = action(
+            self.tr("Open Next Folder"),
+            self.open_next_folder,
+            shortcuts.get("open_next_folder", "Ctrl+Shift+Right"),
+            "next",
+            self.tr("Open the next folder in the same parent folder"),
+        )
+        open_prev_folder = action(
+            self.tr("Open Previous Folder"),
+            self.open_prev_folder,
+            shortcuts.get("open_prev_folder", "Ctrl+Shift+Left"),
+            "prev",
+            self.tr("Open the previous folder in the same parent folder"),
         )
         open_next_image = action(
             self.tr("&Next Image"),
@@ -1765,6 +1780,8 @@ class LabelingWidget(LabelDialog):
                 open_next_unchecked_image,
                 open_prev_unchecked_image,
                 opendir,
+                open_next_folder,
+                open_prev_folder,
                 openvideo,
                 self.menus.recent_files,
                 save,
@@ -3402,9 +3419,9 @@ class LabelingWidget(LabelDialog):
         shape.line_color = QtGui.QColor(r, g, b)
         shape.vertex_fill_color = QtGui.QColor(r, g, b)
         shape.hvertex_fill_color = QtGui.QColor(255, 255, 255)
-        shape.fill_color = QtGui.QColor(r, g, b, 128)
+        shape.fill_color = QtGui.QColor(r, g, b, HOVER_FILL_ALPHA)
         shape.select_line_color = QtGui.QColor(255, 255, 255)
-        shape.select_fill_color = QtGui.QColor(r, g, b, 155)
+        shape.select_fill_color = QtGui.QColor(r, g, b, SELECT_FILL_ALPHA)
 
     def _get_rgb_by_label(self, label, skip_label_info=False):
         if label in self.label_info and not skip_label_info:
@@ -5505,6 +5522,83 @@ class LabelingWidget(LabelDialog):
             
             if parent is not None and hasattr(parent, 'add_sync_watch_directory'):
                 parent.add_sync_watch_directory(target_dir_path)
+
+    def open_next_folder(self, _value=False):
+        self._open_sibling_folder(+1)
+
+    def open_prev_folder(self, _value=False):
+        self._open_sibling_folder(-1)
+
+    def _open_sibling_folder(self, step):
+        """현재 폴더와 같은 상위 폴더 안에서 이름순으로 다음(+1)/이전(-1) 폴더를 연다.
+        이미지가 없는 폴더, '_' 또는 '.' 으로 시작하는 폴더는 건너뛴다."""
+        cur = self.last_open_dir
+        if not cur and self.filename:
+            cur = osp.dirname(self.filename)
+        if not cur or not osp.isdir(cur):
+            self.status(self.tr("Open a folder first"))
+            return
+        cur = osp.normpath(cur)
+        parent, cur_name = osp.split(cur)
+        exts = tuple(
+            f".{fmt.data().decode().lower()}"
+            for fmt in QtGui.QImageReader.supportedImageFormats()
+        )
+
+        def has_images(path):
+            try:
+                with os.scandir(path) as it:
+                    return any(
+                        e.is_file() and e.name.lower().endswith(exts)
+                        for e in it
+                    )
+            except OSError:
+                return False
+
+        try:
+            names = sorted(
+                (
+                    e.name
+                    for e in os.scandir(parent)
+                    if e.is_dir() and not e.name.startswith(("_", "."))
+                ),
+                key=lambda s: s.casefold(),
+            )
+        except OSError:
+            return
+        if cur_name not in names:
+            names.append(cur_name)
+            names.sort(key=lambda s: s.casefold())
+        i = names.index(cur_name) + step
+        target = None
+        while 0 <= i < len(names):
+            if has_images(osp.join(parent, names[i])):
+                target = osp.join(parent, names[i])
+                break
+            i += step
+        if target is None:
+            self.status(
+                self.tr("Last folder reached")
+                if step > 0
+                else self.tr("First folder reached")
+            )
+            return
+        if not self.may_continue():
+            return
+        try:
+            self._flush_pending_auto_save()
+        except Exception:
+            pass
+        # 새 폴더에 classes.txt 가 없으면 현재 폴더의 것을 복사 (열 때마다 클래스 입력창이 뜨지 않게)
+        src_cls, dst_cls = osp.join(cur, "classes.txt"), osp.join(target, "classes.txt")
+        if osp.isfile(src_cls) and not osp.exists(dst_cls):
+            try:
+                shutil.copyfile(src_cls, dst_cls)
+            except OSError:
+                pass
+        self.import_image_folder(target)
+        self._ensure_classes_in_dir(target)
+        self.status(self.tr("Opened folder: ") + osp.basename(target))
 
     @property
     def image_list(self):

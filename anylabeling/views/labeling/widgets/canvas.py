@@ -22,6 +22,8 @@ AUTO_DECODE_DELAY_MS = 100
 MAX_AUTO_DECODE_MARKS = 42
 AUTO_DECODE_MOVE_THRESHOLD = 5.0
 MOVE_SPEED = 5.0
+RESIZE_STEP = 0.5   # Shift/Ctrl+방향키로 사각형 변을 움직이는 크기(px). 0.5 로 바꾸면 반 픽셀 단위
+MIN_RECT_SIZE = 1.0
 LARGE_ROTATION_INCREMENT = 0.1
 SMALL_ROTATION_INCREMENT = 0.01
 
@@ -2119,6 +2121,54 @@ class Canvas(
             self.repaint()
             self.moving_shape = True
 
+    def resize_rectangle_by_keyboard(self, key, modifiers):
+        """선택한 사각형의 변을 키보드로 RESIZE_STEP(px)씩 움직인다.
+        Shift+방향키: 오른쪽/아래 변이 방향키 방향으로 이동 (Shift+→ 오른쪽 변 늘리기, Shift+← 줄이기, Shift+↓ 아래 변 늘리기, Shift+↑ 줄이기)
+        Ctrl+방향키 : 왼쪽/위 변이 방향키 방향으로 이동 (Ctrl+← 왼쪽 변 늘리기, Ctrl+→ 줄이기, Ctrl+↑ 위 변 늘리기, Ctrl+↓ 줄이기)
+        처리했으면 True, 해당 없으면 False(기존 방향키 동작으로 넘어감)."""
+        if self.pixmap is None:
+            return False
+        shapes = [
+            s
+            for s in self.selected_shapes
+            if s.shape_type == "rectangle" and len(s.points) >= 4
+        ]
+        if not shapes:
+            return False
+        mods = int(modifiers)
+        shift = bool(mods & int(QtCore.Qt.ShiftModifier))
+        ctrl = bool(mods & int(QtCore.Qt.ControlModifier))
+        if shift == ctrl:
+            return False
+        dx = {QtCore.Qt.Key_Left: -1.0, QtCore.Qt.Key_Right: 1.0}.get(key, 0.0)
+        dy = {QtCore.Qt.Key_Up: -1.0, QtCore.Qt.Key_Down: 1.0}.get(key, 0.0)
+        width, height = self.pixmap.width(), self.pixmap.height()
+        changed = False
+        for shape in shapes:
+            xs = [p.x() for p in shape.points]
+            ys = [p.y() for p in shape.points]
+            x1, x2, y1, y2 = min(xs), max(xs), min(ys), max(ys)
+            if shift:
+                x2 += dx * RESIZE_STEP
+                y2 += dy * RESIZE_STEP
+            else:
+                x1 += dx * RESIZE_STEP
+                y1 += dy * RESIZE_STEP
+            x1, y1 = max(0.0, x1), max(0.0, y1)
+            x2, y2 = min(float(width), x2), min(float(height), y2)
+            if x2 - x1 < MIN_RECT_SIZE or y2 - y1 < MIN_RECT_SIZE:
+                continue
+            shape.points[0] = QtCore.QPointF(x1, y1)
+            shape.points[1] = QtCore.QPointF(x2, y1)
+            shape.points[2] = QtCore.QPointF(x2, y2)
+            shape.points[3] = QtCore.QPointF(x1, y2)
+            changed = True
+        if changed:
+            self.store_shapes()
+            self.shape_moved.emit()
+            self.update()
+        return True
+
     def rotate_by_keyboard(self, theta):
         """Rotate selected shapes by an theta (using keyboard)"""
         if self.selected_shapes:
@@ -2143,6 +2193,14 @@ class Canvas(
             elif modifiers == QtCore.Qt.AltModifier:
                 self.snapping = False
         elif self.editing():
+            if key in (
+                QtCore.Qt.Key_Up,
+                QtCore.Qt.Key_Down,
+                QtCore.Qt.Key_Left,
+                QtCore.Qt.Key_Right,
+            ) and self.resize_rectangle_by_keyboard(key, modifiers):
+                ev.accept()
+                return
             if key == QtCore.Qt.Key_Up:
                 self.move_by_keyboard(QtCore.QPointF(0.0, -MOVE_SPEED))
             elif key == QtCore.Qt.Key_Down:

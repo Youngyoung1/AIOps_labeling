@@ -10,10 +10,14 @@ from ..labeling.logger import logger
 # - [opt] Store paths instead of creating new ones at each paint.
 
 
+# 채움 투명도(알파 0~255): 정밀 라벨링에서 이미지가 가려지지 않도록 낮춤. 숫자만 바꾸면 전체에 반영됨
+HOVER_FILL_ALPHA = 0     # 마우스를 올렸을 때 (0 = 채우지 않음, 테두리만)
+SELECT_FILL_ALPHA = 30   # 선택했을 때
+
 DEFAULT_LINE_COLOR = QtGui.QColor(0, 255, 0, 128)  # bf hovering
-DEFAULT_FILL_COLOR = QtGui.QColor(100, 100, 100, 100)  # hovering
+DEFAULT_FILL_COLOR = QtGui.QColor(100, 100, 100, HOVER_FILL_ALPHA)  # hovering
 DEFAULT_SELECT_LINE_COLOR = QtGui.QColor(255, 255, 255)  # selected
-DEFAULT_SELECT_FILL_COLOR = QtGui.QColor(0, 255, 0, 155)  # selected
+DEFAULT_SELECT_FILL_COLOR = QtGui.QColor(0, 255, 0, SELECT_FILL_ALPHA)  # selected
 DEFAULT_VERTEX_FILL_COLOR = QtGui.QColor(0, 255, 0, 255)  # hovering
 DEFAULT_HVERTEX_FILL_COLOR = QtGui.QColor(255, 255, 255, 255)  # hovering
 
